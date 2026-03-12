@@ -2,9 +2,9 @@
 
 ## 交流群
 
-| 微信群 | 微信群1 | QQ群 | TG群 |
-|:---:|:---:|:---:|:---:|
-| ![微信群](static/wechat-group.png) | ![微信群1](static/wechat-group1.png) | ![QQ群](static/qq-group.png) | ![TG群](static/tg-group.png) |
+| 微信群 | QQ群 | TG群 |
+|:---:|:---:|:---:|
+| ![微信群](static/wechat-group.png) | ![QQ群](static/qq-group.png) | ![TG群](static/tg-group.png) |
 
 
 
