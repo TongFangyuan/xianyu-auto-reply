@@ -7687,10 +7687,11 @@ class XianyuLive:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
-            if send_message == '[我已拍下，待付款]':
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】系统消息不处理')
-                return
-            elif send_message == '[你关闭了订单，钱款已原路退返]':
+            # 注释掉 [我已拍下，待付款] 的拦截，让它可以触发自动回复
+            # if send_message == '[我已拍下，待付款]':
+            #     logger.info(f'[{msg_time}] 【{self.cookie_id}】系统消息不处理')
+            #     return
+            if send_message == '[你关闭了订单，钱款已原路退返]':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】系统消息不处理')
                 return
             elif send_message == '[不想宝贝被砍价?设置不砍价回复  ]':
