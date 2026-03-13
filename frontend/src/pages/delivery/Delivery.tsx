@@ -289,6 +289,9 @@ export function Delivery() {
                     placeholder="输入触发自动发货的关键词"
                     required
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    💡 提示：商品标题中的连续几个字
+                  </p>
                 </div>
                 <div className="input-group">
                   <label className="input-label">关联卡券 *</label>
