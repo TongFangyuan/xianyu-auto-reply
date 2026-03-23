@@ -15,6 +15,7 @@ NC='\033[0m' # No Color
 # 项目配置
 PROJECT_NAME="xianyu-auto-reply"
 COMPOSE_FILE="docker-compose.yml"
+COMPOSE_CMD=()
 
 # 打印带颜色的消息
 print_info() {
@@ -33,6 +34,17 @@ print_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
+set_compose_cmd() {
+    if docker compose version &> /dev/null; then
+        COMPOSE_CMD=(docker compose)
+    elif command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD=(docker-compose)
+    else
+        print_error "未检测到 Docker Compose，请安装 docker compose 插件或 docker-compose"
+        exit 1
+    fi
+}
+
 # 检查依赖
 check_dependencies() {
     print_info "检查系统依赖..."
@@ -42,10 +54,7 @@ check_dependencies() {
         exit 1
     fi
     
-    if ! command -v docker-compose &> /dev/null; then
-        print_error "Docker Compose 未安装，请先安装 Docker Compose"
-        exit 1
-    fi
+    set_compose_cmd
     
     print_success "系统依赖检查通过"
 }
@@ -81,9 +90,9 @@ build_image() {
     print_info "构建 Docker 镜像..."
     echo "是否需要使用国内镜像(y/n): " && read iscn
     if [[ $iscn == "y" ]]; then
-        docker-compose -f docker-compose-cn.yml build --no-cache
+        "${COMPOSE_CMD[@]}" -f docker-compose-cn.yml build --no-cache
     else
-        docker-compose build --no-cache
+        "${COMPOSE_CMD[@]}" build --no-cache
     fi  
     print_success "镜像构建完成"
 }
@@ -98,7 +107,7 @@ start_services() {
         print_info "启动基础服务..."
     fi
 
-    docker-compose $profile up -d
+    "${COMPOSE_CMD[@]}" $profile up -d
     print_success "服务启动完成"
 
     # 等待服务就绪
@@ -106,12 +115,12 @@ start_services() {
     sleep 10
 
     # 检查服务状态
-    if docker-compose ps | grep -q "Up"; then
+    if "${COMPOSE_CMD[@]}" ps | grep -q "Up"; then
         print_success "服务运行正常"
         show_access_info "$1"
     else
         print_error "服务启动失败"
-        docker-compose logs
+        "${COMPOSE_CMD[@]}" logs
         exit 1
     fi
 }
@@ -119,14 +128,14 @@ start_services() {
 # 停止服务
 stop_services() {
     print_info "停止服务..."
-    docker-compose down
+    "${COMPOSE_CMD[@]}" down
     print_success "服务已停止"
 }
 
 # 重启服务
 restart_services() {
     print_info "重启服务..."
-    docker-compose restart
+    "${COMPOSE_CMD[@]}" restart
     print_success "服务已重启"
 }
 
@@ -134,19 +143,19 @@ restart_services() {
 show_logs() {
     local service="$1"
     if [ -z "$service" ]; then
-        docker-compose logs -f
+        "${COMPOSE_CMD[@]}" logs -f
     else
-        docker-compose logs -f "$service"
+        "${COMPOSE_CMD[@]}" logs -f "$service"
     fi
 }
 
 # 查看状态
 show_status() {
     print_info "服务状态:"
-    docker-compose ps
+    "${COMPOSE_CMD[@]}" ps
     
     print_info "资源使用:"
-    docker stats --no-stream $(docker-compose ps -q)
+    docker stats --no-stream $("${COMPOSE_CMD[@]}" ps -q)
 }
 
 # 显示访问信息

@@ -4,6 +4,7 @@ FROM python:3.11-slim-bookworm AS base
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     DOCKER_ENV=true \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -30,8 +31,8 @@ RUN pnpm build
 FROM base AS builder
 
 # 安装基础依赖
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=5 && \
+    apt-get install -y --fix-missing --no-install-recommends \
         curl \
         ca-certificates \
         && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -68,10 +69,9 @@ LABEL maintainer="zhinianboke" \
 
 ENV NODE_PATH=/usr/lib/node_modules
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=5 && \
+    apt-get install -y --fix-missing --no-install-recommends \
         nodejs \
-        npm \
         tzdata \
         curl \
         ca-certificates \
@@ -120,8 +120,8 @@ RUN apt-get update && \
 # 设置时区        
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 验证Node.js安装并设置环境变量
-RUN node --version && npm --version
+# 验证Node.js安装
+RUN node --version
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app /app
