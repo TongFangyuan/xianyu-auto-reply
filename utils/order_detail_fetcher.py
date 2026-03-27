@@ -66,6 +66,7 @@ class OrderDetailFetcher:
 
         # Cookie配置 - 支持动态传入
         self.cookie = cookie_string
+        self.chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
 
     async def init_browser(self, headless: bool = None):
         """初始化浏览器"""
@@ -138,9 +139,15 @@ class OrderDetailFetcher:
                 ])
 
             logger.info(f"启动浏览器，参数: {browser_args}")
+            launch_kwargs = {
+                'headless': headless,
+                'args': browser_args
+            }
+            if self.chromium_executable_path:
+                launch_kwargs['executable_path'] = self.chromium_executable_path
+                logger.info(f"使用系统 Chromium: {self.chromium_executable_path}")
             self.browser = await self.playwright.chromium.launch(
-                headless=headless,
-                args=browser_args
+                **launch_kwargs
             )
 
             logger.info("浏览器启动成功，创建上下文...")

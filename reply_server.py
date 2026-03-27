@@ -9,14 +9,17 @@ from urllib.parse import unquote
 import hashlib
 import secrets
 import time
+import threading
 import json
 import os
 import re
+import sqlite3
 import uvicorn
 import pandas as pd
 import io
 import asyncio
 from collections import defaultdict
+from datetime import datetime
 
 import cookie_manager
 from db_manager import db_manager
@@ -55,6 +58,8 @@ qr_check_processed = {}  # 记录已处理的session: {session_id: {'processed':
 # 账号密码登录会话管理
 password_login_sessions = {}  # {session_id: {'account_id': str, 'account': str, 'password': str, 'show_browser': bool, 'status': str, 'verification_url': str, 'qr_code_url': str, 'slider_instance': object, 'task': asyncio.Task, 'timestamp': float}}
 password_login_locks = defaultdict(lambda: asyncio.Lock())
+auto_backup_thread = None
+auto_backup_stop_event = threading.Event()
 
 # 不再需要单独的密码初始化，由数据库初始化时处理
 
@@ -107,6 +112,120 @@ def load_keywords() -> List[Tuple[str, str]]:
 
 
 KEYWORDS_MAPPING = load_keywords()
+
+
+def _get_backup_directory() -> Path:
+    """获取数据库备份目录。优先使用项目 backups 目录，不存在则回退到数据库所在目录。"""
+    project_backup_dir = Path(__file__).parent / "backups"
+    try:
+        project_backup_dir.mkdir(parents=True, exist_ok=True)
+        return project_backup_dir
+    except Exception as e:
+        logger.warning(f"创建备份目录失败，回退到数据库目录: {e}")
+        return Path(db_manager.db_path).resolve().parent
+
+
+def _list_database_backup_paths() -> List[Path]:
+    backup_dir = _get_backup_directory()
+    return sorted(
+        backup_dir.glob("xianyu_data_backup_*.db"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+
+
+def _cleanup_old_database_backups(keep_count: int, user_info: Dict[str, Any] = None):
+    keep_count = max(1, keep_count)
+    backup_files = _list_database_backup_paths()
+    for old_file in backup_files[keep_count:]:
+        try:
+            old_file.unlink()
+            log_with_user('info', f"已清理旧数据库备份: {old_file.name}", user_info)
+        except Exception as e:
+            log_with_user('warning', f"清理旧数据库备份失败 {old_file.name}: {e}", user_info)
+
+
+def create_database_backup(user_info: Dict[str, Any] = None, reason: str = "manual") -> Dict[str, Any]:
+    """创建数据库物理备份文件。"""
+    backup_dir = _get_backup_directory()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"xianyu_data_backup_{timestamp}.db"
+
+    keep_count_raw = db_manager.get_system_setting('auto_backup_keep_count') or '7'
+    try:
+        keep_count = max(1, int(keep_count_raw))
+    except ValueError:
+        keep_count = 7
+
+    try:
+        with db_manager.lock:
+            db_manager.conn.commit()
+            target_conn = sqlite3.connect(str(backup_path))
+            try:
+                db_manager.conn.backup(target_conn)
+            finally:
+                target_conn.close()
+
+        file_size = backup_path.stat().st_size
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        db_manager.set_system_setting('auto_backup_last_run', now_str, '数据库自动备份最后执行时间')
+        db_manager.set_system_setting('auto_backup_last_status', 'success', '数据库自动备份最近执行状态')
+        db_manager.set_system_setting('auto_backup_last_file', backup_path.name, '数据库自动备份最近生成文件')
+        _cleanup_old_database_backups(keep_count, user_info)
+
+        log_with_user('info', f"数据库备份创建成功({reason}): {backup_path}", user_info)
+        return {
+            'success': True,
+            'message': '数据库备份创建成功',
+            'filename': backup_path.name,
+            'path': str(backup_path),
+            'size': file_size,
+            'size_mb': round(file_size / (1024 * 1024), 2),
+            'created_time': now_str,
+        }
+    except Exception as e:
+        db_manager.set_system_setting('auto_backup_last_run', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '数据库自动备份最后执行时间')
+        db_manager.set_system_setting('auto_backup_last_status', f'failed: {str(e)[:200]}', '数据库自动备份最近执行状态')
+        log_with_user('error', f"数据库备份创建失败({reason}): {e}", user_info)
+        if backup_path.exists():
+            try:
+                backup_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def _auto_backup_worker():
+    """数据库自动备份后台线程。"""
+    logger.info("数据库自动备份线程已启动")
+    while not auto_backup_stop_event.is_set():
+        try:
+            enabled = (db_manager.get_system_setting('auto_backup_enabled') or 'false').lower() == 'true'
+            interval_raw = db_manager.get_system_setting('auto_backup_interval_hours') or '24'
+            try:
+                interval_hours = max(1, int(interval_raw))
+            except ValueError:
+                interval_hours = 24
+
+            if enabled:
+                backup_files = _list_database_backup_paths()
+                latest_mtime = backup_files[0].stat().st_mtime if backup_files else 0
+                should_run = (time.time() - latest_mtime) >= interval_hours * 3600
+                if should_run:
+                    create_database_backup(reason='auto')
+        except Exception as e:
+            logger.error(f"自动备份任务执行失败: {e}")
+
+        auto_backup_stop_event.wait(300)
+
+
+def ensure_auto_backup_thread():
+    global auto_backup_thread
+    if auto_backup_thread and auto_backup_thread.is_alive():
+        return
+    auto_backup_stop_event.clear()
+    auto_backup_thread = threading.Thread(target=_auto_backup_worker, daemon=True, name="auto-db-backup")
+    auto_backup_thread.start()
 
 
 # 认证相关模型
@@ -312,6 +431,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+
+@app.on_event("startup")
+async def startup_auto_backup():
+    ensure_auto_backup_thread()
 
 # 注册刮刮乐远程控制路由
 if CAPTCHA_ROUTER_AVAILABLE:
@@ -5851,6 +5975,57 @@ def download_database_backup(
         log_with_user('error', f"下载数据库备份失败: {str(e)}", admin_user)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get('/admin/backup/auto-status')
+def get_auto_backup_status(admin_user: Dict[str, Any] = Depends(require_admin)):
+    """获取自动备份状态（管理员专用）"""
+    try:
+        enabled = (db_manager.get_system_setting('auto_backup_enabled') or 'false').lower() == 'true'
+        interval_hours = int(db_manager.get_system_setting('auto_backup_interval_hours') or '24')
+        keep_count = int(db_manager.get_system_setting('auto_backup_keep_count') or '7')
+        backups = _list_database_backup_paths()
+
+        latest_backup = None
+        if backups:
+            latest = backups[0]
+            stat = latest.stat()
+            latest_backup = {
+                'filename': latest.name,
+                'size': stat.st_size,
+                'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                'modified_time': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+        return {
+            'success': True,
+            'enabled': enabled,
+            'interval_hours': max(1, interval_hours),
+            'keep_count': max(1, keep_count),
+            'last_run': db_manager.get_system_setting('auto_backup_last_run') or '',
+            'last_status': db_manager.get_system_setting('auto_backup_last_status') or '',
+            'last_file': db_manager.get_system_setting('auto_backup_last_file') or '',
+            'backup_count': len(backups),
+            'latest_backup': latest_backup
+        }
+    except Exception as e:
+        log_with_user('error', f"获取自动备份状态失败: {e}", admin_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/admin/backup/run')
+def run_database_backup(admin_user: Dict[str, Any] = Depends(require_admin)):
+    """立即执行一次数据库备份（管理员专用）"""
+    try:
+        result = create_database_backup(admin_user, reason='manual')
+        return {
+            'success': True,
+            'message': result['message'],
+            'data': result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post('/admin/backup/upload')
 async def upload_database_backup(admin_user: Dict[str, Any] = Depends(require_admin),
                                 backup_file: UploadFile = File(...)):
@@ -5965,17 +6140,12 @@ async def upload_database_backup(admin_user: Dict[str, Any] = Depends(require_ad
 def list_backup_files(admin_user: Dict[str, Any] = Depends(require_admin)):
     """列出服务器上的备份文件（管理员专用）"""
     import os
-    import glob
-    from datetime import datetime
 
     try:
         log_with_user('info', "查询备份文件列表", admin_user)
 
-        # 查找备份文件（在data目录中）
-        backup_files = glob.glob("data/xianyu_data_backup_*.db")
-
         backup_list = []
-        for file_path in backup_files:
+        for file_path in _list_database_backup_paths():
             try:
                 stat = os.stat(file_path)
                 backup_list.append({

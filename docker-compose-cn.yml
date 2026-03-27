@@ -23,10 +23,13 @@ services:
       - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
       - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
       - TZ=${TZ:-Asia/Shanghai}
+      - DOCKER_ENV=true
       - DB_PATH=${DB_PATH:-/app/data/xianyu_data.db}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEBUG=${DEBUG:-false}
       - RELOAD=${RELOAD:-false}
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+      - PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
       # SQL日志配置（默认启用，可通过环境变量覆盖）
       - SQL_LOG_ENABLED=${SQL_LOG_ENABLED:-true}
       - SQL_LOG_LEVEL=${SQL_LOG_LEVEL:-INFO}
@@ -78,7 +81,7 @@ services:
 
   # 可选：添加Nginx反向代理
   nginx:
-    image: nginx:alpine
+    image: docker.m.daocloud.io/library/nginx:alpine
     container_name: xianyu-nginx
     restart: unless-stopped
     ports:

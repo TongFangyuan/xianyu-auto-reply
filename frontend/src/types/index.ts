@@ -185,6 +185,12 @@ export interface SystemSettings {
   registration_enabled?: boolean
   show_default_login_info?: boolean
   login_captcha_enabled?: boolean
+  auto_backup_enabled?: boolean
+  auto_backup_interval_hours?: number
+  auto_backup_keep_count?: number
+  auto_backup_last_run?: string
+  auto_backup_last_status?: string
+  auto_backup_last_file?: string
   // SMTP邮件配置
   smtp_server?: string
   smtp_port?: number

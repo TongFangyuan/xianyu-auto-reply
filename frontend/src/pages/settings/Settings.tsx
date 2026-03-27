@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Save, Bot, Mail, RefreshCw, Key, Download, Upload, Archive, Eye, EyeOff, Copy } from 'lucide-react'
-import { getSystemSettings, updateSystemSettings, testAIConnection, testEmailSend, changePassword, downloadDatabaseBackup, uploadDatabaseBackup, reloadSystemCache, exportUserBackup, importUserBackup } from '@/api/settings'
+import { getSystemSettings, updateSystemSettings, testAIConnection, testEmailSend, changePassword, downloadDatabaseBackup, uploadDatabaseBackup, reloadSystemCache, exportUserBackup, importUserBackup, getAutoBackupStatus, runDatabaseBackup } from '@/api/settings'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading, ButtonLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import type { SystemSettings, Account } from '@/types'
+import type { AutoBackupStatus } from '@/api/settings'
 
 export function Settings() {
   const { addToast } = useUIStore()
@@ -24,6 +25,8 @@ export function Settings() {
   // 备份管理状态
   const [uploadingBackup, setUploadingBackup] = useState(false)
   const [reloadingCache, setReloadingCache] = useState(false)
+  const [runningBackup, setRunningBackup] = useState(false)
+  const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null)
   const backupFileRef = useRef<HTMLInputElement>(null)
   const userBackupFileRef = useRef<HTMLInputElement>(null)
   
@@ -56,10 +59,26 @@ export function Settings() {
     }
   }
 
+  const loadAutoBackupStatus = async () => {
+    if (!_hasHydrated || !isAuthenticated || !token || !user?.is_admin) return
+    try {
+      const result = await getAutoBackupStatus()
+      setAutoBackupStatus(result)
+    } catch {
+      // ignore
+    }
+  }
+
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     loadSettings()
   }, [_hasHydrated, isAuthenticated, token])
+
+  useEffect(() => {
+    if (_hasHydrated && isAuthenticated && token && user?.is_admin) {
+      loadAutoBackupStatus()
+    }
+  }, [_hasHydrated, isAuthenticated, token, user?.is_admin])
 
   const handleSave = async () => {
     if (!settings) return
@@ -68,6 +87,9 @@ export function Settings() {
       const result = await updateSystemSettings(settings)
       if (result.success) {
         addToast({ type: 'success', message: '设置保存成功' })
+        if (user?.is_admin) {
+          loadAutoBackupStatus()
+        }
       } else {
         addToast({ type: 'error', message: result.message || '保存失败' })
       }
@@ -227,6 +249,23 @@ export function Settings() {
       addToast({ type: 'error', message: '刷新缓存失败' })
     } finally {
       setReloadingCache(false)
+    }
+  }
+
+  const handleRunDatabaseBackup = async () => {
+    try {
+      setRunningBackup(true)
+      const result = await runDatabaseBackup()
+      if (result.success) {
+        addToast({ type: 'success', message: result.message || '数据库备份已创建' })
+        loadAutoBackupStatus()
+      } else {
+        addToast({ type: 'error', message: result.message || '创建数据库备份失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '创建数据库备份失败' })
+    } finally {
+      setRunningBackup(false)
     }
   }
 
@@ -719,7 +758,61 @@ export function Settings() {
                     <span className="text-xs bg-slate-500 text-white px-1.5 py-0.5 rounded">管理员</span>
                   </div>
                   <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">完整备份或恢复整个数据库</p>
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 mb-3 space-y-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-medium text-slate-900 dark:text-slate-100">启用自动备份</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">按设定间隔自动生成数据库备份文件，保存在 `backups` 目录</p>
+                      </div>
+                      <label className="switch-ios">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings?.auto_backup_enabled ?? false)}
+                          onChange={(e) => setSettings(s => s ? { ...s, auto_backup_enabled: e.target.checked } : null)}
+                        />
+                        <span className="switch-slider"></span>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="input-group">
+                        <label className="input-label">备份间隔（小时）</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={Number(settings?.auto_backup_interval_hours ?? 24)}
+                          onChange={(e) => setSettings(s => s ? { ...s, auto_backup_interval_hours: Math.max(1, Number(e.target.value) || 24) } : null)}
+                          className="input-ios"
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label">保留份数</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={Number(settings?.auto_backup_keep_count ?? 7)}
+                          onChange={(e) => setSettings(s => s ? { ...s, auto_backup_keep_count: Math.max(1, Number(e.target.value) || 7) } : null)}
+                          className="input-ios"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <p>最近执行：{autoBackupStatus?.last_run || '暂无'}</p>
+                      <p>最近状态：{autoBackupStatus?.last_status || '暂无'}</p>
+                      <p>最近文件：{autoBackupStatus?.last_file || '暂无'}</p>
+                      <p>现有备份：{autoBackupStatus?.backup_count ?? 0} 份</p>
+                    </div>
+                  </div>
                   <div className="flex flex-wrap gap-2 mb-2">
+                    <button
+                      onClick={handleRunDatabaseBackup}
+                      disabled={runningBackup}
+                      className="btn-ios-primary"
+                    >
+                      {runningBackup ? <ButtonLoading /> : <Archive className="w-4 h-4" />}
+                      立即备份
+                    </button>
                     <button onClick={handleDownloadBackup} className="btn-ios-primary">
                       <Download className="w-4 h-4" />
                       下载数据库

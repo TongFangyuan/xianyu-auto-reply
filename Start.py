@@ -158,6 +158,12 @@ def _check_and_install_playwright():
     # 检查Playwright浏览器是否存在
     playwright_installed = False
     possible_paths = []
+    system_chromium_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+
+    if system_chromium_path and Path(system_chromium_path).exists():
+        print(f"{_OK} 检测到系统 Chromium: {system_chromium_path}")
+        print(f"{_INFO} 跳过 Playwright 浏览器下载，直接复用系统浏览器")
+        return True
     
     # 如果是打包后的exe，优先检查exe同目录
     if getattr(sys, 'frozen', False):

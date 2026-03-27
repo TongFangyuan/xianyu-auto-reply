@@ -49,6 +49,7 @@ class XianyuSearcher:
         self.page = None
         self.api_responses = []
         self.user_id = "default"  # 默认用户ID
+        self.chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
 
     async def _handle_scratch_captcha_manual(self, page, max_retries=3, wait_for_completion=True):
         """人工处理刮刮乐滑块（远程控制 + 截图备份）
@@ -720,16 +721,22 @@ class XianyuSearcher:
                 ])
 
             logger.info("正在启动浏览器（中文模式，持久化缓存）...")
+            launch_kwargs = {
+                'headless': True,
+                'args': browser_args,
+                'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                'viewport': {'width': 1280, 'height': 720},
+                'locale': 'zh-CN',
+            }
+            if self.chromium_executable_path:
+                launch_kwargs['executable_path'] = self.chromium_executable_path
+                logger.info(f"使用系统 Chromium: {self.chromium_executable_path}")
             
             # 使用 launch_persistent_context 实现跨会话的缓存持久化
             # 这样通过一次滑块验证后，下次搜索可以复用缓存，避免再次出现滑块
             self.context = await self.playwright.chromium.launch_persistent_context(
                 user_data_dir,  # 第一个参数是用户数据目录，用于持久化
-                headless=True,  # 无头模式，后台运行
-                args=browser_args,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 720},
-                locale='zh-CN',  # 设置语言为中文
+                **launch_kwargs,
                 # 持久化上下文会自动保存和加载：
                 # - Cookies
                 # - 缓存
@@ -1635,6 +1642,5 @@ async def search_multiple_pages_xianyu(keyword: str, total_pages: int = 1) -> Di
         'total': 0,
         'error': "未知错误"
     }
-
 
 
