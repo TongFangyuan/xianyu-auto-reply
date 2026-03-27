@@ -334,6 +334,30 @@ docker-compose -f docker-compose-cn.yml up -d --build
 # http://localhost:8080
 ```
 
+#### 🇨🇳 国内构建说明（源码构建时建议阅读）
+
+`docker-compose-cn.yml`、`Dockerfile-cn` 已经针对国内网络环境做了构建优化，默认包含以下策略：
+
+- Docker 基础镜像使用国内可访问源：`docker.m.daocloud.io`
+- `apt` 软件源切换为清华镜像：`https://mirrors.tuna.tsinghua.edu.cn`
+- Python 依赖默认使用清华 PyPI 镜像：`https://pypi.tuna.tsinghua.edu.cn/simple`
+- 前端 `npm/pnpm` 默认使用 `https://registry.npmmirror.com`
+- Playwright 在 Docker 中默认复用系统 `chromium`，不再额外下载浏览器大包
+
+如果你在国内服务器或本地开发机上从源码构建，推荐直接使用下面的命令：
+
+```bash
+docker compose -f docker-compose-cn.yml up --build -d
+```
+
+如需单独构建镜像，也可以直接使用国内优化版 Dockerfile：
+
+```bash
+docker build -f Dockerfile-cn -t xianyu-auto-reply:latest .
+```
+
+如果你的 Docker Desktop 或 Docker Engine 还没有配置 registry mirror，建议额外在 Docker daemon 中配置国内镜像加速，这样拉取基础镜像会更稳定。
+
 **Windows用户**：
 ```cmd
 # 国际版
@@ -605,9 +629,9 @@ CPU_LIMIT=2.0                          # CPU限制(核心数)
 
 ### 🐳 部署配置
 - **`Dockerfile`** - Docker镜像构建文件，基于Python 3.11-slim，包含Playwright浏览器、C编译器（支持Nuitka编译）、系统依赖，支持无头模式运行，优化构建层级，自动编译性能关键模块
-- **`Dockerfile-cn`** - 国内优化版Docker镜像构建文件，使用国内镜像源加速构建，适合国内网络环境
+- **`Dockerfile-cn`** - 国内优化版Docker镜像构建文件，Docker 基础镜像走国内源，`apt` 使用清华镜像，`pip` 使用清华 PyPI，前端依赖使用 `npmmirror`，并在容器内直接复用系统 `chromium`，避免 Playwright 额外下载浏览器大包
 - **`docker-compose.yml`** - Docker Compose配置，支持一键部署、完整环境变量配置、资源限制、健康检查、可选Nginx代理
-- **`docker-compose-cn.yml`** - 国内优化版Docker Compose配置文件，使用国内镜像源
+- **`docker-compose-cn.yml`** - 国内优化版Docker Compose配置文件，默认配合 `Dockerfile-cn` 使用，适合国内网络环境直接执行 `docker compose -f docker-compose-cn.yml up --build -d`
 - **`docker-deploy.sh`** - Docker部署管理脚本，提供构建、启动、停止、重启、监控、日志查看等功能（Linux/macOS）
 - **`docker-deploy.bat`** - Windows版本部署脚本，支持Windows环境一键部署和管理
 - **`entrypoint.sh`** - Docker容器启动脚本，增强版包含环境验证、依赖检查、目录创建、权限设置和详细启动日志

@@ -317,9 +317,9 @@ class XianyuSliderStealth:
             
             # 启动浏览器，使用随机特征
             logger.info(f"【{self.pure_user_id}】启动浏览器，headless模式: {self.headless}")
-            self.browser = self.playwright.chromium.launch(
-                headless=self.headless,
-                args=[
+            launch_kwargs = {
+                'headless': self.headless,
+                'args': [
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
@@ -373,7 +373,12 @@ class XianyuSliderStealth:
                     "--edge-skip-compat-layer-relaunch",
                     "--allow-pre-commit-input"
                 ]
-            )
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+                logger.info(f"【{self.pure_user_id}】使用系统 Chromium: {chromium_executable_path}")
+            self.browser = self.playwright.chromium.launch(**launch_kwargs)
             
             # 验证浏览器已启动
             if not self.browser or not self.browser.is_connected():
@@ -2992,19 +2997,23 @@ class XianyuSliderStealth:
             
             # 启动浏览器
             playwright = sync_playwright().start()
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir,
-                headless=not show_browser,
-                args=browser_args,
-                viewport={'width': 1980, 'height': 1024},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-                locale='zh-CN',  # 设置浏览器区域为中文
-                accept_downloads=True,
-                ignore_https_errors=True,
-                extra_http_headers={
-                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'  # 设置HTTP Accept-Language header为中文
+            launch_kwargs = {
+                'headless': not show_browser,
+                'args': browser_args,
+                'viewport': {'width': 1980, 'height': 1024},
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                'locale': 'zh-CN',
+                'accept_downloads': True,
+                'ignore_https_errors': True,
+                'extra_http_headers': {
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
                 }
-            )
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+                logger.info(f"【{self.pure_user_id}】使用系统 Chromium: {chromium_executable_path}")
+            context = playwright.chromium.launch_persistent_context(user_data_dir, **launch_kwargs)
             logger.info(f"【{self.pure_user_id}】已设置浏览器语言为中文（zh-CN）")
             
             browser = context.browser

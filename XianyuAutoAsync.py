@@ -2663,10 +2663,14 @@ class XianyuLive:
                     '--use-mock-keychain'
                 ])
 
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
-            )
+            launch_kwargs = {
+                'headless': True,
+                'args': browser_args
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+            browser = await playwright.chromium.launch(**launch_kwargs)
 
             # 创建浏览器上下文
             context = await browser.new_context(
@@ -5708,10 +5712,14 @@ class XianyuLive:
                 ])
 
             # 使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,  # 改回无头模式
-                args=browser_args
-            )
+            launch_kwargs = {
+                'headless': True,
+                'args': browser_args
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+            browser = await playwright.chromium.launch(**launch_kwargs)
 
             # 创建浏览器上下文
             context_options = {
@@ -6093,10 +6101,14 @@ class XianyuLive:
                 ])
 
             # 使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
-            )
+            launch_kwargs = {
+                'headless': True,
+                'args': browser_args
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+            browser = await playwright.chromium.launch(**launch_kwargs)
 
             # 创建浏览器上下文
             context_options = {
@@ -6396,10 +6408,14 @@ class XianyuLive:
                 ])
 
             # Cookie刷新模式使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
-            )
+            launch_kwargs = {
+                'headless': True,
+                'args': browser_args
+            }
+            chromium_executable_path = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH')
+            if chromium_executable_path:
+                launch_kwargs['executable_path'] = chromium_executable_path
+            browser = await playwright.chromium.launch(**launch_kwargs)
 
             # 创建浏览器上下文
             context_options = {
