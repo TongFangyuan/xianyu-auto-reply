@@ -12,6 +12,7 @@ import { Keywords } from '@/pages/keywords/Keywords'
 import { About } from '@/pages/about/About'
 import { Disclaimer } from '@/pages/disclaimer/Disclaimer'
 import { Cards } from '@/pages/cards/Cards'
+import { ResourceLinks } from '@/pages/resource-links/ResourceLinks'
 import { Delivery } from '@/pages/delivery/Delivery'
 import { NotificationChannels } from '@/pages/notifications/NotificationChannels'
 import { MessageNotifications } from '@/pages/notifications/MessageNotifications'
@@ -154,6 +155,7 @@ function App() {
           <Route path="orders" element={<Orders />} />
           <Route path="keywords" element={<Keywords />} />
           <Route path="item-replies" element={<ItemReplies />} />
+          <Route path="resource-links" element={<ResourceLinks />} />
           <Route path="cards" element={<Cards />} />
           <Route path="delivery" element={<Delivery />} />
           <Route path="notification-channels" element={<NotificationChannels />} />

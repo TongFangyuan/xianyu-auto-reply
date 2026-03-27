@@ -216,6 +216,25 @@ class DBManager:
             )
             ''')
 
+            # 创建卡密资源表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resource_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_name TEXT NOT NULL,
+                drive_type TEXT NOT NULL CHECK (drive_type IN ('quark', 'baidu')),
+                resource_url TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(resource_name, drive_type, user_id)
+            )
+            ''')
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_user_id ON resource_links(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_name ON resource_links(resource_name)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_drive_type ON resource_links(drive_type)")
+
             # 创建订单表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS orders (
@@ -290,6 +309,38 @@ class DBManager:
                 UNIQUE(cookie_id, item_id)
             )
             ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resource_link_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_link_id INTEGER NOT NULL,
+                item_info_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                drive_type TEXT NOT NULL CHECK (drive_type IN ('quark', 'baidu')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (resource_link_id) REFERENCES resource_links(id) ON DELETE CASCADE,
+                FOREIGN KEY (item_info_id) REFERENCES item_info(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(resource_link_id),
+                UNIQUE(resource_link_id, item_info_id),
+                UNIQUE(user_id, item_info_id, drive_type)
+            )
+            ''')
+
+            cursor.execute('''
+            DELETE FROM resource_link_items
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM resource_link_items
+                GROUP BY resource_link_id
+            )
+            ''')
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_link_id ON resource_link_items(resource_link_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_item_id ON resource_link_items(item_info_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_user_drive ON resource_link_items(user_id, drive_type)")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_link_items_resource_unique ON resource_link_items(resource_link_id)")
 
             # 检查并添加 multi_quantity_delivery 列（用于多数量发货功能）
             try:
@@ -2439,12 +2490,28 @@ class DBManager:
                                 'columns': columns,
                                 'rows': [list(row) for row in rows]
                             }
+
+                    self._execute_sql(cursor, "SELECT * FROM resource_links WHERE user_id = ?", (user_id,))
+                    columns = [description[0] for description in cursor.description]
+                    rows = cursor.fetchall()
+                    backup_data['data']['resource_links'] = {
+                        'columns': columns,
+                        'rows': [list(row) for row in rows]
+                    }
+
+                    self._execute_sql(cursor, "SELECT * FROM resource_link_items WHERE user_id = ?", (user_id,))
+                    columns = [description[0] for description in cursor.description]
+                    rows = cursor.fetchall()
+                    backup_data['data']['resource_link_items'] = {
+                        'columns': columns,
+                        'rows': [list(row) for row in rows]
+                    }
                 else:
                     # 系统级备份：备份所有数据
                     tables = [
-                        'cookies', 'keywords', 'cookie_status', 'cards',
+                        'cookies', 'keywords', 'cookie_status', 'cards', 'resource_links',
                         'delivery_rules', 'default_replies', 'notification_channels',
-                        'message_notifications', 'system_settings', 'item_info',
+                        'message_notifications', 'system_settings', 'item_info', 'resource_link_items',
                         'ai_reply_settings', 'ai_conversations', 'ai_item_cache'
                     ]
 
@@ -2483,6 +2550,9 @@ class DBManager:
                     self._execute_sql(cursor, "SELECT id FROM cookies WHERE user_id = ?", (user_id,))
                     user_cookie_ids = [row[0] for row in cursor.fetchall()]
 
+                    self._execute_sql(cursor, "DELETE FROM resource_link_items WHERE user_id = ?", (user_id,))
+                    self._execute_sql(cursor, "DELETE FROM resource_links WHERE user_id = ?", (user_id,))
+
                     if user_cookie_ids:
                         placeholders = ','.join(['?' for _ in user_cookie_ids])
 
@@ -2499,7 +2569,7 @@ class DBManager:
                     # 系统级导入：清空所有数据（除了用户和管理员密码）
                     tables = [
                         'message_notifications', 'notification_channels', 'default_replies',
-                        'delivery_rules', 'cards', 'item_info', 'cookie_status', 'keywords',
+                        'delivery_rules', 'cards', 'resource_link_items', 'resource_links', 'item_info', 'cookie_status', 'keywords',
                         'ai_conversations', 'ai_reply_settings', 'ai_item_cache', 'cookies'
                     ]
 
@@ -2512,7 +2582,7 @@ class DBManager:
                 # 导入数据
                 data = backup_data['data']
                 for table_name, table_data in data.items():
-                    if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards',
+                    if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards', 'resource_links', 'resource_link_items',
                                         'delivery_rules', 'default_replies', 'notification_channels',
                                         'message_notifications', 'system_settings', 'item_info',
                                         'ai_reply_settings', 'ai_conversations', 'ai_item_cache']:
@@ -2533,6 +2603,27 @@ class DBManager:
                             row_dict['user_id'] = user_id
                             updated_rows.append([row_dict[col] for col in columns])
                         rows = updated_rows
+                    elif user_id is not None and table_name == 'resource_links':
+                        updated_rows = []
+                        for row in rows:
+                            row_dict = dict(zip(columns, row))
+                            row_dict['user_id'] = user_id
+                            updated_rows.append([row_dict[col] for col in columns])
+                        rows = updated_rows
+                    elif user_id is not None and table_name == 'resource_link_items':
+                        updated_rows = []
+                        for row in rows:
+                            row_dict = dict(zip(columns, row))
+                            row_dict['user_id'] = user_id
+                            updated_rows.append([row_dict[col] for col in columns])
+                        rows = updated_rows
+
+                    if table_name == 'resource_link_items':
+                        resource_link_id_index = columns.index('resource_link_id')
+                        deduped_rows = {}
+                        for row in rows:
+                            deduped_rows[row[resource_link_id_index]] = row
+                        rows = list(deduped_rows.values())
 
                     # 构建插入语句
                     placeholders = ','.join(['?' for _ in columns])
@@ -3012,6 +3103,406 @@ class DBManager:
         except Exception as e:
             logger.error(f"API邮件发送方法异常: {e}")
             return False
+
+    # ==================== 卡密资源管理方法 ====================
+
+    def _get_resource_link_association_count(self, cursor, resource_link_id: int) -> int:
+        self._execute_sql(
+            cursor,
+            "SELECT COUNT(*) FROM resource_link_items WHERE resource_link_id = ?",
+            (resource_link_id,)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    def _get_resource_link_item_previews(self, cursor, resource_link_id: int, limit: int = 2) -> List[Dict[str, Any]]:
+        self._execute_sql(cursor, '''
+        SELECT i.id, i.cookie_id, i.item_id,
+               CASE
+                   WHEN i.item_title IS NULL OR TRIM(i.item_title) = '' THEN i.item_id
+                   ELSE i.item_title
+               END AS display_title
+        FROM resource_link_items rli
+        INNER JOIN item_info i ON i.id = rli.item_info_id
+        WHERE rli.resource_link_id = ?
+        ORDER BY rli.updated_at DESC, rli.id DESC
+        LIMIT ?
+        ''', (resource_link_id, limit))
+
+        return [
+            {
+                'item_info_id': row[0],
+                'cookie_id': row[1],
+                'item_id': row[2],
+                'item_title': row[3],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def _serialize_resource_link_row(self, row, cursor=None) -> Dict[str, Any]:
+        local_cursor = cursor or self.conn.cursor()
+        association_count = row[6] if len(row) > 6 else self._get_resource_link_association_count(local_cursor, row[0])
+        return {
+            'id': row[0],
+            'resource_name': row[1],
+            'drive_type': row[2],
+            'resource_url': row[3],
+            'created_at': row[4],
+            'updated_at': row[5],
+            'association_count': association_count or 0,
+            'associated_items': self._get_resource_link_item_previews(local_cursor, row[0], limit=1),
+        }
+
+    def _get_resource_link_core(self, cursor, link_id: int, user_id: int):
+        self._execute_sql(cursor, '''
+        SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
+               (
+                   SELECT COUNT(*)
+                   FROM resource_link_items rli
+                   WHERE rli.resource_link_id = rl.id
+               ) AS association_count
+        FROM resource_links rl
+        WHERE rl.id = ? AND rl.user_id = ?
+        ''', (link_id, user_id))
+        return cursor.fetchone()
+
+    def list_resource_links(self, user_id: int, keyword: str = None, drive_type: str = None):
+        """获取卡密资源列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                sql = '''
+                SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
+                       (
+                           SELECT COUNT(*)
+                           FROM resource_link_items rli
+                           WHERE rli.resource_link_id = rl.id
+                       ) AS association_count
+                FROM resource_links rl
+                WHERE rl.user_id = ?
+                '''
+                params = [user_id]
+
+                if keyword:
+                    sql += " AND rl.resource_name LIKE ?"
+                    params.append(f"%{keyword.strip()}%")
+                if drive_type:
+                    sql += " AND rl.drive_type = ?"
+                    params.append(drive_type.strip())
+
+                sql += " ORDER BY rl.updated_at DESC, rl.id DESC"
+                self._execute_sql(cursor, sql, tuple(params))
+
+                return [self._serialize_resource_link_row(row, cursor) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取卡密资源列表失败: {e}")
+                return []
+
+    def get_resource_link_by_id(self, link_id: int, user_id: int):
+        """根据ID获取卡密资源"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                row = self._get_resource_link_core(cursor, link_id, user_id)
+                return self._serialize_resource_link_row(row, cursor) if row else None
+            except Exception as e:
+                logger.error(f"获取卡密资源详情失败: {e}")
+                return None
+
+    def get_resource_link_by_unique(self, resource_name: str, drive_type: str, user_id: int):
+        """根据唯一键获取卡密资源"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT id, resource_name, drive_type, resource_url, created_at, updated_at
+                FROM resource_links
+                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
+                ''', (resource_name.strip(), drive_type.strip(), user_id))
+                row = cursor.fetchone()
+                return self._serialize_resource_link_row(row) if row else None
+            except Exception as e:
+                logger.error(f"按唯一键获取卡密资源失败: {e}")
+                return None
+
+    def create_resource_link(self, resource_name: str, drive_type: str, resource_url: str, user_id: int):
+        """创建卡密资源"""
+        with self.lock:
+            try:
+                resource_name = resource_name.strip()
+                drive_type = drive_type.strip()
+                resource_url = resource_url.strip()
+
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT id FROM resource_links
+                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
+                ''', (resource_name, drive_type, user_id))
+                if cursor.fetchone():
+                    raise ValueError(f"资源已存在：{resource_name} / {drive_type}")
+
+                self._execute_sql(cursor, '''
+                INSERT INTO resource_links (resource_name, drive_type, resource_url, user_id)
+                VALUES (?, ?, ?, ?)
+                ''', (resource_name, drive_type, resource_url, user_id))
+                self.conn.commit()
+                link_id = cursor.lastrowid
+                logger.info(f"创建卡密资源成功: {resource_name} / {drive_type} (ID: {link_id})")
+                return link_id
+            except Exception as e:
+                logger.error(f"创建卡密资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def update_resource_link(self, link_id: int, user_id: int, resource_name: str = None,
+                             drive_type: str = None, resource_url: str = None):
+        """更新卡密资源"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT resource_name, drive_type, resource_url
+                FROM resource_links
+                WHERE id = ? AND user_id = ?
+                ''', (link_id, user_id))
+                current = cursor.fetchone()
+                if not current:
+                    return False
+
+                next_resource_name = resource_name.strip() if resource_name is not None else current[0]
+                next_drive_type = drive_type.strip() if drive_type is not None else current[1]
+                next_resource_url = resource_url.strip() if resource_url is not None else current[2]
+
+                if next_drive_type != current[1]:
+                    association_count = self._get_resource_link_association_count(cursor, link_id)
+                    if association_count > 0:
+                        raise ValueError("当前资源已关联商品，需先解除关联后才能修改网盘类型")
+
+                self._execute_sql(cursor, '''
+                SELECT id FROM resource_links
+                WHERE resource_name = ? AND drive_type = ? AND user_id = ? AND id != ?
+                ''', (next_resource_name, next_drive_type, user_id, link_id))
+                if cursor.fetchone():
+                    raise ValueError(f"资源已存在：{next_resource_name} / {next_drive_type}")
+
+                self._execute_sql(cursor, '''
+                UPDATE resource_links
+                SET resource_name = ?, drive_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                ''', (next_resource_name, next_drive_type, next_resource_url, link_id, user_id))
+                self.conn.commit()
+                logger.info(f"更新卡密资源成功: ID {link_id}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新卡密资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def get_resource_link_items(self, link_id: int, user_id: int):
+        """获取资源的商品关联候选列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                resource_row = self._get_resource_link_core(cursor, link_id, user_id)
+                if not resource_row:
+                    return None
+
+                resource = self._serialize_resource_link_row(resource_row, cursor)
+                drive_type = resource['drive_type']
+
+                self._execute_sql(cursor, '''
+                SELECT i.id, i.cookie_id, i.item_id, i.item_title, i.item_price, i.updated_at,
+                       rli.resource_link_id AS associated_resource_id,
+                       rl.resource_name AS associated_resource_name
+                FROM item_info i
+                INNER JOIN cookies c ON c.id = i.cookie_id
+                LEFT JOIN resource_link_items rli
+                    ON rli.item_info_id = i.id
+                   AND rli.user_id = ?
+                   AND rli.drive_type = ?
+                LEFT JOIN resource_links rl ON rl.id = rli.resource_link_id
+                WHERE c.user_id = ?
+                ORDER BY i.updated_at DESC, i.id DESC
+                ''', (user_id, drive_type, user_id))
+
+                items = []
+                for row in cursor.fetchall():
+                    associated_resource_id = row[6]
+                    association_status = 'none'
+                    if associated_resource_id == link_id:
+                        association_status = 'current'
+                    elif associated_resource_id:
+                        association_status = 'other'
+
+                    display_title = row[3].strip() if isinstance(row[3], str) and row[3].strip() else row[2]
+                    items.append({
+                        'id': row[0],
+                        'cookie_id': row[1],
+                        'item_id': row[2],
+                        'item_title': row[3],
+                        'display_title': display_title,
+                        'item_price': row[4],
+                        'updated_at': row[5],
+                        'association_status': association_status,
+                        'associated_resource_id': associated_resource_id,
+                        'associated_resource_name': row[7],
+                    })
+
+                return {
+                    'resource': resource,
+                    'items': items,
+                }
+            except Exception as e:
+                logger.error(f"获取资源关联商品列表失败: {e}")
+                return None
+
+    def update_resource_link_items(self, link_id: int, user_id: int, item_info_ids: List[int]):
+        """更新资源关联商品"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                resource_row = self._get_resource_link_core(cursor, link_id, user_id)
+                if not resource_row:
+                    return None
+
+                drive_type = resource_row[2]
+                normalized_ids = []
+                for item_info_id in item_info_ids or []:
+                    normalized_id = int(item_info_id)
+                    if normalized_id not in normalized_ids:
+                        normalized_ids.append(normalized_id)
+
+                if len(normalized_ids) > 1:
+                    raise ValueError("一个资源只能关联一个商品")
+
+                valid_item_ids = []
+                if normalized_ids:
+                    placeholders = ','.join(['?' for _ in normalized_ids])
+                    self._execute_sql(cursor, f'''
+                    SELECT i.id
+                    FROM item_info i
+                    INNER JOIN cookies c ON c.id = i.cookie_id
+                    WHERE c.user_id = ? AND i.id IN ({placeholders})
+                    ''', (user_id, *normalized_ids))
+                    valid_item_ids = [row[0] for row in cursor.fetchall()]
+
+                    if len(valid_item_ids) != len(normalized_ids):
+                        raise ValueError("部分商品不存在或无权限关联")
+
+                selected_item_id = valid_item_ids[0] if valid_item_ids else None
+
+                self._execute_sql(cursor, '''
+                SELECT item_info_id
+                FROM resource_link_items
+                WHERE resource_link_id = ? AND user_id = ?
+                ''', (link_id, user_id))
+                current_rows = cursor.fetchall()
+                current_item_id = current_rows[0][0] if current_rows else None
+
+                replacement_item_id = None
+                if selected_item_id is not None:
+                    self._execute_sql(cursor, '''
+                    SELECT item_info_id
+                    FROM resource_link_items
+                    WHERE user_id = ? AND drive_type = ? AND resource_link_id != ? AND item_info_id = ?
+                    ''', (user_id, drive_type, link_id, selected_item_id))
+                    replacement_row = cursor.fetchone()
+                    replacement_item_id = replacement_row[0] if replacement_row else None
+
+                removed_count = 1 if current_item_id is not None and current_item_id != selected_item_id else 0
+                replaced_count = 1 if replacement_item_id is not None else 0
+                added_count = 1 if selected_item_id is not None and current_item_id != selected_item_id and replacement_item_id is None else 0
+
+                self._execute_sql(cursor, "BEGIN TRANSACTION")
+
+                if replacement_item_id is not None:
+                    self._execute_sql(cursor, '''
+                    DELETE FROM resource_link_items
+                    WHERE user_id = ? AND drive_type = ? AND item_info_id = ?
+                    ''', (user_id, drive_type, replacement_item_id))
+
+                if current_item_id is not None and current_item_id != selected_item_id:
+                    self._execute_sql(cursor, '''
+                    DELETE FROM resource_link_items
+                    WHERE resource_link_id = ? AND user_id = ? AND item_info_id = ?
+                    ''', (link_id, user_id, current_item_id))
+
+                if selected_item_id is not None and current_item_id != selected_item_id:
+                    self._execute_sql(cursor, '''
+                    INSERT INTO resource_link_items (resource_link_id, item_info_id, user_id, drive_type)
+                    VALUES (?, ?, ?, ?)
+                    ''', (link_id, selected_item_id, user_id, drive_type))
+
+                self.conn.commit()
+                logger.info(
+                    f"更新资源关联商品成功: resource_link_id={link_id}, user_id={user_id}, "
+                    f"added={added_count}, replaced={replaced_count}, removed={removed_count}"
+                )
+                return {
+                    'added_count': added_count,
+                    'replaced_count': replaced_count,
+                    'removed_count': removed_count,
+                    'total_selected': 1 if selected_item_id is not None else 0,
+                }
+            except Exception as e:
+                logger.error(f"更新资源关联商品失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def upsert_resource_link(self, resource_name: str, drive_type: str, resource_url: str, user_id: int):
+        """按资源名称+网盘类型创建或更新卡密资源"""
+        with self.lock:
+            try:
+                resource_name = resource_name.strip()
+                drive_type = drive_type.strip()
+                resource_url = resource_url.strip()
+
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT id, resource_url
+                FROM resource_links
+                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
+                ''', (resource_name, drive_type, user_id))
+                existing = cursor.fetchone()
+
+                if existing:
+                    self._execute_sql(cursor, '''
+                    UPDATE resource_links
+                    SET resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND user_id = ?
+                    ''', (resource_url, existing[0], user_id))
+                    self.conn.commit()
+                    logger.info(f"更新卡密资源成功: {resource_name} / {drive_type} (ID: {existing[0]})")
+                    return {'id': existing[0], 'action': 'updated'}
+
+                self._execute_sql(cursor, '''
+                INSERT INTO resource_links (resource_name, drive_type, resource_url, user_id)
+                VALUES (?, ?, ?, ?)
+                ''', (resource_name, drive_type, resource_url, user_id))
+                self.conn.commit()
+                logger.info(f"创建卡密资源成功: {resource_name} / {drive_type} (ID: {cursor.lastrowid})")
+                return {'id': cursor.lastrowid, 'action': 'created'}
+            except Exception as e:
+                logger.error(f"导入卡密资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def delete_resource_link(self, link_id: int, user_id: int):
+        """删除卡密资源"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "DELETE FROM resource_link_items WHERE resource_link_id = ? AND user_id = ?", (link_id, user_id))
+                self._execute_sql(cursor, "DELETE FROM resource_links WHERE id = ? AND user_id = ?", (link_id, user_id))
+                self.conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"删除卡密资源成功: ID {link_id}")
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"删除卡密资源失败: {e}")
+                self.conn.rollback()
+                return False
 
     # ==================== 卡券管理方法 ====================
 
@@ -4315,6 +4806,12 @@ class DBManager:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                DELETE FROM resource_link_items
+                WHERE item_info_id IN (
+                    SELECT id FROM item_info WHERE cookie_id = ? AND item_id = ?
+                )
+                ''', (cookie_id, item_id))
                 cursor.execute('DELETE FROM item_info WHERE cookie_id = ? AND item_id = ?',
                              (cookie_id, item_id))
 
@@ -4357,6 +4854,12 @@ class DBManager:
                         if not cookie_id or not item_id:
                             continue
 
+                        self._execute_sql(cursor, '''
+                        DELETE FROM resource_link_items
+                        WHERE item_info_id IN (
+                            SELECT id FROM item_info WHERE cookie_id = ? AND item_id = ?
+                        )
+                        ''', (cookie_id, item_id))
                         cursor.execute('DELETE FROM item_info WHERE cookie_id = ? AND item_id = ?',
                                      (cookie_id, item_id))
 
@@ -4510,36 +5013,50 @@ class DBManager:
 
                 # 开始事务
                 cursor.execute('BEGIN TRANSACTION')
+                cursor.execute('SELECT id FROM cookies WHERE user_id = ?', (user_id,))
+                user_cookie_ids = [row[0] for row in cursor.fetchall()]
 
                 # 删除用户相关的所有数据
                 # 1. 删除用户设置
                 cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
 
-                # 2. 删除用户的卡券
+                # 2. 删除用户的资源商品关联
+                cursor.execute('DELETE FROM resource_link_items WHERE user_id = ?', (user_id,))
+
+                # 3. 删除用户的卡密资源
+                cursor.execute('DELETE FROM resource_links WHERE user_id = ?', (user_id,))
+
+                # 4. 删除用户的卡券
                 cursor.execute('DELETE FROM cards WHERE user_id = ?', (user_id,))
 
-                # 3. 删除用户的发货规则
+                # 5. 删除用户的发货规则
                 cursor.execute('DELETE FROM delivery_rules WHERE user_id = ?', (user_id,))
 
-                # 4. 删除用户的通知渠道
+                # 6. 删除用户的通知渠道
                 cursor.execute('DELETE FROM notification_channels WHERE user_id = ?', (user_id,))
 
-                # 5. 删除用户的Cookie
+                if user_cookie_ids:
+                    placeholders = ','.join(['?' for _ in user_cookie_ids])
+
+                    # 7. 删除用户的消息通知
+                    cursor.execute(f'DELETE FROM message_notifications WHERE cookie_id IN ({placeholders})', user_cookie_ids)
+
+                    # 8. 删除用户的默认回复
+                    cursor.execute(f'DELETE FROM default_replies WHERE cookie_id IN ({placeholders})', user_cookie_ids)
+
+                    # 9. 删除用户的AI回复设置
+                    cursor.execute(f'DELETE FROM ai_reply_settings WHERE cookie_id IN ({placeholders})', user_cookie_ids)
+
+                    # 10. 删除用户的商品信息
+                    cursor.execute(f'DELETE FROM item_info WHERE cookie_id IN ({placeholders})', user_cookie_ids)
+
+                    # 11. 删除用户的关键字
+                    cursor.execute(f'DELETE FROM keywords WHERE cookie_id IN ({placeholders})', user_cookie_ids)
+
+                # 12. 删除用户的Cookie
                 cursor.execute('DELETE FROM cookies WHERE user_id = ?', (user_id,))
 
-                # 6. 删除用户的关键字
-                cursor.execute('DELETE FROM keywords WHERE cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)', (user_id,))
-
-                # 7. 删除用户的默认回复
-                cursor.execute('DELETE FROM default_replies WHERE cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)', (user_id,))
-
-                # 8. 删除用户的AI回复设置
-                cursor.execute('DELETE FROM ai_reply_settings WHERE cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)', (user_id,))
-
-                # 9. 删除用户的消息通知
-                cursor.execute('DELETE FROM message_notifications WHERE cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)', (user_id,))
-
-                # 10. 最后删除用户本身
+                # 13. 最后删除用户本身
                 cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
 
                 # 提交事务
@@ -4803,6 +5320,8 @@ class DBManager:
                     'ai_conversations': 'id',
                     'ai_item_cache': 'id',
                     'item_info': 'id',
+                    'resource_links': 'id',
+                    'resource_link_items': 'id',
                     'message_notifications': 'id',
                     'cards': 'id',
                     'delivery_rules': 'id',
@@ -4815,6 +5334,11 @@ class DBManager:
                 }
 
                 primary_key = primary_key_map.get(table_name, 'id')
+
+                if table_name == 'resource_links':
+                    cursor.execute("DELETE FROM resource_link_items WHERE resource_link_id = ?", (record_id,))
+                elif table_name == 'item_info':
+                    cursor.execute("DELETE FROM resource_link_items WHERE item_info_id = ?", (record_id,))
 
                 # 删除记录
                 cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
@@ -4837,6 +5361,13 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+
+                if table_name == 'resource_links':
+                    cursor.execute("DELETE FROM resource_link_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_link_items'")
+                elif table_name == 'item_info':
+                    cursor.execute("DELETE FROM resource_link_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_link_items'")
 
                 # 清空表数据
                 cursor.execute(f"DELETE FROM {table_name}")
