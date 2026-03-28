@@ -450,11 +450,16 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -
             'resource_name': resource_name,
             'resource_type': '',
             'links': [],
+            'latest_updated_at': '',
         })
 
         resource_type = str(link.get('resource_type') or '').strip()
         if resource_type and not resource_group['resource_type']:
             resource_group['resource_type'] = resource_type
+
+        latest_updated_at = str(link.get('updated_at') or link.get('created_at') or '').strip()
+        if latest_updated_at and latest_updated_at > resource_group['latest_updated_at']:
+            resource_group['latest_updated_at'] = latest_updated_at
 
         resource_group['links'].append({
             'drive_type': str(link.get('drive_type') or '').strip(),
@@ -489,6 +494,7 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -
         lines.append(f"### ----------{resource_type}---------")
 
         resources = sorted(grouped_by_type[resource_type], key=lambda item: item['resource_name'])
+        resources.sort(key=lambda item: item.get('latest_updated_at', ''), reverse=True)
         for resource_index, resource_group in enumerate(resources):
             lines.append('')
             lines.append(f"#### {resource_group['resource_name']}")
