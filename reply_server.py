@@ -5,7 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, quote, parse_qs, urlparse
 import hashlib
 import secrets
 import time
@@ -119,23 +119,35 @@ RESOURCE_DRIVE_LABELS = {
     'baidu': '百度',
 }
 
+RESOURCE_TYPE_OPTIONS = [
+    '电视剧',
+    '动漫',
+    '短剧',
+    '电影',
+    '综艺',
+]
+
 RESOURCE_URL_PATTERNS = {
     'quark': re.compile(r'https?://pan\.quark\.cn/s/[^\s]+', re.IGNORECASE),
     'baidu': re.compile(r'https?://pan\.baidu\.com/s/[^\s]+', re.IGNORECASE),
 }
 
 RESOURCE_LINK_TEMPLATE_ROWS = [
-    ['资源名称', '网盘类型', '资源链接'],
-    ['真相捕捉3', '百度', 'https://pan.baidu.com/s/1KUgCHi2wK3_agNHRKW4DJw?pwd=1234'],
-    ['沃d.上虞', '夸克', 'https://pan.quark.cn/s/852995adca1e'],
+    ['资源名称', '资源类型', '网盘类型', '资源链接'],
+    ['真相捕捉3', '电视剧', '百度', 'https://pan.baidu.com/s/1KUgCHi2wK3_agNHRKW4DJw?pwd=1234'],
+    ['沃d.上虞', '动漫', '夸克', 'https://pan.quark.cn/s/852995adca1e'],
 ]
 
 
-def normalize_resource_drive_type(drive_type: str) -> str:
-    if not drive_type:
-        raise ValueError("网盘类型不能为空")
+def normalize_resource_text_field(value: Any, field_name: str) -> str:
+    normalized = re.sub(r'\s+', ' ', str(value or '').strip())
+    if not normalized:
+        raise ValueError(f"{field_name}不能为空")
+    return normalized
 
-    normalized = drive_type.strip().lower()
+
+def normalize_resource_drive_type(drive_type: str) -> str:
+    normalized = normalize_resource_text_field(drive_type, "网盘类型").lower()
     mapping = {
         '夸克': 'quark',
         '夸克网盘': 'quark',
@@ -145,14 +157,31 @@ def normalize_resource_drive_type(drive_type: str) -> str:
         'baidu': 'baidu',
     }
 
-    if normalized not in mapping:
-        raise ValueError("暂不支持该网盘类型，仅支持夸克和百度")
+    if normalized in mapping:
+        return mapping[normalized]
 
-    return mapping[normalized]
+    return normalize_resource_text_field(drive_type, "网盘类型")
+
+
+def normalize_resource_type(resource_type: str) -> str:
+    return normalize_resource_text_field(resource_type, "资源类型")
 
 
 def get_resource_drive_label(drive_type: str) -> str:
     return RESOURCE_DRIVE_LABELS.get(drive_type, drive_type)
+
+
+def extract_baidu_pwd_from_url(resource_url: str) -> str:
+    try:
+        query = parse_qs(urlparse(resource_url or '').query)
+        pwd = (query.get('pwd') or [''])[0].strip()
+        if pwd:
+            return pwd
+    except Exception as e:
+        logger.warning(f"解析百度提取码失败: {e}")
+
+    match = re.search(r'(?:pwd|提取码)[：:=\s]*([A-Za-z0-9]+)', resource_url or '')
+    return match.group(1).strip() if match else ''
 
 
 def clean_resource_url(url: str) -> str:
@@ -161,7 +190,11 @@ def clean_resource_url(url: str) -> str:
 
 def detect_resource_drive_and_url(content: str, preferred_drive_type: Optional[str] = None) -> Tuple[str, str]:
     candidates: List[Tuple[int, str, str]] = []
-    drive_types = [preferred_drive_type] if preferred_drive_type else list(RESOURCE_URL_PATTERNS.keys())
+    drive_types = (
+        [preferred_drive_type]
+        if preferred_drive_type and preferred_drive_type in RESOURCE_URL_PATTERNS
+        else list(RESOURCE_URL_PATTERNS.keys())
+    )
 
     for drive_type in drive_types:
         if not drive_type:
@@ -182,21 +215,19 @@ def detect_resource_drive_and_url(content: str, preferred_drive_type: Optional[s
 
 
 def validate_resource_link_payload(payload: Dict[str, Any]) -> Dict[str, str]:
-    resource_name = (payload.get('resource_name') or '').strip()
+    resource_name = normalize_resource_text_field(payload.get('resource_name'), "资源名称")
+    resource_type = normalize_resource_type(payload.get('resource_type'))
     raw_drive_type = payload.get('drive_type')
     raw_resource_url = (payload.get('resource_url') or '').strip()
 
-    if not resource_name:
-        raise ValueError("资源名称不能为空")
-    if not raw_drive_type:
-        raise ValueError("网盘类型不能为空")
     if not raw_resource_url:
         raise ValueError("资源链接不能为空")
 
     drive_type = normalize_resource_drive_type(raw_drive_type)
+    known_drive_type = drive_type if drive_type in RESOURCE_URL_PATTERNS else None
 
     try:
-        detected_drive_type, resource_url = detect_resource_drive_and_url(raw_resource_url, drive_type)
+        detected_drive_type, resource_url = detect_resource_drive_and_url(raw_resource_url, known_drive_type)
     except ValueError:
         resource_url = clean_resource_url(raw_resource_url)
         detected_drive_type = None
@@ -204,11 +235,14 @@ def validate_resource_link_payload(payload: Dict[str, Any]) -> Dict[str, str]:
     if not resource_url.startswith('http://') and not resource_url.startswith('https://'):
         raise ValueError("资源链接格式不正确")
 
-    if detected_drive_type and detected_drive_type != drive_type:
+    if detected_drive_type and known_drive_type and detected_drive_type != known_drive_type:
         raise ValueError("网盘类型与资源链接不匹配")
+    if detected_drive_type and not known_drive_type:
+        drive_type = detected_drive_type
 
     return {
         'resource_name': resource_name,
+        'resource_type': resource_type,
         'drive_type': drive_type,
         'resource_url': resource_url,
     }
@@ -227,10 +261,9 @@ def parse_resource_share_block(content: str) -> Dict[str, str]:
     }
 
 
-def parse_resource_import_content(resource_name: str, content: str) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
-    normalized_resource_name = resource_name.strip()
-    if not normalized_resource_name:
-        raise ValueError("资源名称不能为空")
+def parse_resource_import_content(resource_name: str, resource_type: str, content: str) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    normalized_resource_name = normalize_resource_text_field(resource_name, "资源名称")
+    normalized_resource_type = normalize_resource_type(resource_type)
 
     normalized_content = content.replace('\r\n', '\n').strip()
     if not normalized_content:
@@ -248,6 +281,7 @@ def parse_resource_import_content(resource_name: str, content: str) -> Tuple[Lis
         try:
             item = parse_resource_share_block(block)
             item['resource_name'] = normalized_resource_name
+            item['resource_type'] = normalized_resource_type
             dedupe_key = item['drive_type']
             if dedupe_key in seen_keys:
                 raise ValueError(
@@ -292,11 +326,13 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
 
     header_aliases = {
         'resource_name': {'resource_name', 'resourcename', '资源名称', '资源名', '名称'},
-        'drive_type': {'drive_type', 'drivetype', '网盘类型', '网盘', '类型'},
+        'resource_type': {'resource_type', 'resourcetype', '资源类型', '分类', '内容类型'},
+        'drive_type': {'drive_type', 'drivetype', '网盘类型', '网盘'},
         'resource_url': {'resource_url', 'resourceurl', '资源链接', '链接', '资源地址', '地址'},
     }
     header_labels = {
         'resource_name': '资源名称',
+        'resource_type': '资源类型',
         'drive_type': '网盘类型',
         'resource_url': '资源链接',
     }
@@ -326,6 +362,7 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
         try:
             payload = validate_resource_link_payload({
                 'resource_name': row.get(field_mapping['resource_name'], ''),
+                'resource_type': row.get(field_mapping['resource_type'], ''),
                 'drive_type': row.get(field_mapping['drive_type'], ''),
                 'resource_url': row.get(field_mapping['resource_url'], ''),
             })
@@ -339,7 +376,7 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
         except ValueError as exc:
             preview = ' | '.join(
                 str(row.get(field_mapping[field], '') or '').strip()
-                for field in ('resource_name', 'drive_type', 'resource_url')
+                for field in ('resource_name', 'resource_type', 'drive_type', 'resource_url')
             )[:120]
             errors.append({
                 'index': row_number,
@@ -362,9 +399,11 @@ def build_resource_link_duplicate_list(items: List[Dict[str, str]], user_id: int
             duplicates.append({
                 "id": existing['id'],
                 "resource_name": existing['resource_name'],
+                "resource_type": existing.get('resource_type', ''),
                 "drive_type": existing['drive_type'],
                 "drive_type_label": get_resource_drive_label(existing['drive_type']),
                 "existing_url": existing['resource_url'],
+                "new_resource_type": item.get('resource_type', ''),
                 "new_url": item['resource_url'],
             })
     return duplicates
@@ -377,6 +416,7 @@ def execute_resource_link_import(items: List[Dict[str, str]], user_id: int) -> D
     for item in items:
         result = db_manager.upsert_resource_link(
             resource_name=item['resource_name'],
+            resource_type=item['resource_type'],
             drive_type=item['drive_type'],
             resource_url=item['resource_url'],
             user_id=user_id
@@ -391,6 +431,81 @@ def execute_resource_link_import(items: List[Dict[str, str]], user_id: int) -> D
         'updated_count': updated_count,
         'total_count': len(items),
     }
+
+
+def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -> str:
+    if not resource_links:
+        return "> 当前暂无卡密资源\n"
+
+    drive_order = {
+        'baidu': 0,
+        'quark': 1,
+    }
+    type_order = {name: index for index, name in enumerate(RESOURCE_TYPE_OPTIONS)}
+    grouped_by_name: Dict[str, Dict[str, Any]] = {}
+
+    for link in resource_links:
+        resource_name = normalize_resource_text_field(link.get('resource_name'), "资源名称")
+        resource_group = grouped_by_name.setdefault(resource_name, {
+            'resource_name': resource_name,
+            'resource_type': '',
+            'links': [],
+        })
+
+        resource_type = str(link.get('resource_type') or '').strip()
+        if resource_type and not resource_group['resource_type']:
+            resource_group['resource_type'] = resource_type
+
+        resource_group['links'].append({
+            'drive_type': str(link.get('drive_type') or '').strip(),
+            'resource_url': str(link.get('resource_url') or '').strip(),
+        })
+
+    grouped_by_type: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for resource_group in grouped_by_name.values():
+        resource_type = resource_group['resource_type'] or '未分类'
+        resource_group['links'].sort(
+            key=lambda item: (
+                drive_order.get(item['drive_type'], 9),
+                get_resource_drive_label(item['drive_type']).lower(),
+                item['resource_url'],
+            )
+        )
+        grouped_by_type[resource_type].append(resource_group)
+
+    def section_sort_key(resource_type: str):
+        if resource_type == '未分类':
+            return (2, 999, resource_type)
+        if resource_type in type_order:
+            return (0, type_order[resource_type], resource_type)
+        return (1, 999, resource_type)
+
+    lines: List[str] = []
+    sorted_types = sorted(grouped_by_type.keys(), key=section_sort_key)
+
+    for type_index, resource_type in enumerate(sorted_types):
+        if type_index > 0:
+            lines.append('')
+        lines.append(f"### ----------{resource_type}---------")
+
+        resources = sorted(grouped_by_type[resource_type], key=lambda item: item['resource_name'])
+        for resource_index, resource_group in enumerate(resources):
+            lines.append('')
+            lines.append(f"#### {resource_group['resource_name']}")
+            for link in resource_group['links']:
+                drive_type = link['drive_type']
+                drive_label = get_resource_drive_label(drive_type) or '网盘'
+                resource_url = link['resource_url']
+                if not resource_url:
+                    continue
+
+                lines.append(f"- {drive_label}链接: {resource_url}")
+                if drive_type == 'baidu':
+                    pwd = extract_baidu_pwd_from_url(resource_url)
+                    if pwd:
+                        lines.append(f"- 提取码: `{pwd}`")
+
+    return '\n'.join(lines).strip() + '\n'
 
 
 def _get_backup_directory() -> Path:
@@ -730,6 +845,35 @@ setup_file_logging()
 from loguru import logger
 logger.info("Web服务器启动，文件日志收集器已初始化")
 
+FRONTEND_API_CONFLICT_PATHS = {
+    '/items',
+    '/cards',
+    '/resource-links',
+    '/notification-channels',
+    '/message-notifications',
+    '/admin/users',
+    '/admin/logs',
+}
+
+
+def is_frontend_document_request(request) -> bool:
+    """识别浏览器直接刷新前端页面的文档请求，避免命中同名后端接口。"""
+    if request.method != 'GET':
+        return False
+
+    if request.url.path not in FRONTEND_API_CONFLICT_PATHS:
+        return False
+
+    sec_fetch_dest = request.headers.get('sec-fetch-dest', '').lower()
+    sec_fetch_mode = request.headers.get('sec-fetch-mode', '').lower()
+    accept = request.headers.get('accept', '').lower()
+
+    if sec_fetch_dest == 'document' or sec_fetch_mode == 'navigate':
+        return True
+
+    return 'text/html' in accept and 'application/json' not in accept
+
+
 # 添加请求日志中间件
 @app.middleware("http")
 async def log_requests(request, call_next):
@@ -737,7 +881,10 @@ async def log_requests(request, call_next):
 
     logger.info(f"🌐 API请求: {request.method} {request.url.path}")
 
-    response = await call_next(request)
+    if is_frontend_document_request(request):
+        response = await serve_frontend()
+    else:
+        response = await call_next(request)
 
     process_time = time.time() - start_time
     logger.info(f"✅ API响应: {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
@@ -4538,12 +4685,19 @@ def debug_keywords_table_info(current_user: Dict[str, Any] = Depends(get_current
 def get_resource_links(
     keyword: Optional[str] = None,
     drive_type: Optional[str] = None,
+    resource_type: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """获取当前用户的卡密资源列表"""
     try:
         normalized_drive_type = normalize_resource_drive_type(drive_type) if drive_type else None
-        resource_links = db_manager.list_resource_links(current_user['user_id'], keyword, normalized_drive_type)
+        normalized_resource_type = normalize_resource_type(resource_type) if resource_type else None
+        resource_links = db_manager.list_resource_links(
+            current_user['user_id'],
+            keyword,
+            normalized_drive_type,
+            normalized_resource_type
+        )
         return resource_links
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4558,11 +4712,12 @@ def create_resource_link(link_data: dict, current_user: Dict[str, Any] = Depends
         payload = validate_resource_link_payload(link_data)
         log_with_user(
             'info',
-            f"创建卡密资源: {payload['resource_name']} / {get_resource_drive_label(payload['drive_type'])}",
+            f"创建卡密资源: {payload['resource_name']} / {payload['resource_type']} / {get_resource_drive_label(payload['drive_type'])}",
             current_user
         )
         link_id = db_manager.create_resource_link(
             resource_name=payload['resource_name'],
+            resource_type=payload['resource_type'],
             drive_type=payload['drive_type'],
             resource_url=payload['resource_url'],
             user_id=current_user['user_id']
@@ -4581,10 +4736,11 @@ def import_resource_links(import_data: dict, current_user: Dict[str, Any] = Depe
     """通过分享口令批量导入卡密资源"""
     try:
         resource_name = (import_data.get('resource_name') or '').strip()
+        resource_type = (import_data.get('resource_type') or '').strip()
         content = (import_data.get('content') or '').strip()
         confirm_update = bool(import_data.get('confirm_update', False))
 
-        parsed_items, errors = parse_resource_import_content(resource_name, content)
+        parsed_items, errors = parse_resource_import_content(resource_name, resource_type, content)
         if errors:
             return {
                 "success": False,
@@ -4674,8 +4830,6 @@ async def import_resource_links_csv(
 def download_resource_links_template(current_user: Dict[str, Any] = Depends(get_current_user)):
     """下载卡密资源 CSV 模板"""
     try:
-        from urllib.parse import quote
-
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerows(RESOURCE_LINK_TEMPLATE_ROWS)
@@ -4692,6 +4846,27 @@ def download_resource_links_template(current_user: Dict[str, Any] = Depends(get_
         )
     except Exception as e:
         log_with_user('error', f"下载卡密资源模板失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/resource-links/export-document")
+def export_resource_links_document(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """导出卡密资源文档"""
+    try:
+        resource_links = db_manager.list_resource_links(current_user['user_id'])
+        document_content = build_resource_links_export_document(resource_links)
+        filename = f"resource_links_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        encoded_filename = quote(filename.encode('utf-8'))
+
+        return StreamingResponse(
+            io.BytesIO(document_content.encode('utf-8-sig')),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except Exception as e:
+        log_with_user('error', f"导出卡密资源文档失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4774,13 +4949,14 @@ def update_resource_link(link_id: int, link_data: dict, current_user: Dict[str, 
             link_id=link_id,
             user_id=current_user['user_id'],
             resource_name=payload['resource_name'],
+            resource_type=payload['resource_type'],
             drive_type=payload['drive_type'],
             resource_url=payload['resource_url']
         )
         if success:
             log_with_user(
                 'info',
-                f"更新卡密资源成功: {payload['resource_name']} / {get_resource_drive_label(payload['drive_type'])}",
+                f"更新卡密资源成功: {payload['resource_name']} / {payload['resource_type']} / {get_resource_drive_label(payload['drive_type'])}",
                 current_user
             )
             return {"message": "卡密资源更新成功"}
@@ -5007,9 +5183,13 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
-            user_id=user_id
+            user_id=user_id,
+            delivery_mode=rule_data.get('delivery_mode', 'card'),
+            document_type_id=rule_data.get('document_type_id')
         )
         return {"id": rule_id, "message": "发货规则创建成功"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5042,12 +5222,16 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
-            user_id=user_id
+            user_id=user_id,
+            delivery_mode=rule_data.get('delivery_mode'),
+            document_type_id=rule_data.get('document_type_id')
         )
         if success:
             return {"message": "发货规则更新成功"}
         else:
             raise HTTPException(status_code=404, detail="发货规则不存在")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5933,10 +6117,18 @@ def update_user_setting(key: str, setting_data: dict, current_user: Dict[str, An
         success = db_manager.set_user_setting(user_id, key, value, description)
         if success:
             log_with_user('info', f"用户设置更新成功: {key}", current_user)
-            return {'msg': 'setting updated', 'key': key, 'value': value}
+            return {
+                'success': True,
+                'message': '设置已保存',
+                'msg': 'setting updated',
+                'key': key,
+                'value': value,
+            }
         else:
             log_with_user('error', f"用户设置更新失败: {key}", current_user)
             raise HTTPException(status_code=400, detail='更新失败')
+    except HTTPException:
+        raise
     except Exception as e:
         log_with_user('error', f"更新用户设置异常: {key} - {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
@@ -5952,6 +6144,8 @@ def get_user_setting(key: str, current_user: Dict[str, Any] = Depends(get_curren
             return setting
         else:
             raise HTTPException(status_code=404, detail='设置不存在')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

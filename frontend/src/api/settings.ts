@@ -1,5 +1,5 @@
 import { get, post, put } from '@/utils/request'
-import type { ApiResponse, SystemSettings } from '@/types'
+import type { ApiResponse, DeliveryDocumentType, SystemSettings } from '@/types'
 
 // 获取系统设置
 export const getSystemSettings = async (): Promise<{ success: boolean; data?: SystemSettings }> => {
@@ -201,7 +201,37 @@ export const getUserSetting = async (key: string): Promise<{ success: boolean; v
 
 // 更新用户设置
 export const updateUserSetting = async (key: string, value: string, description?: string): Promise<ApiResponse> => {
-  return put(`/user-settings/${key}`, { value, description })
+  const response = await put<ApiResponse>(`/user-settings/${key}`, { value, description })
+  return {
+    success: response.success ?? true,
+    message: response.message || response.msg || '设置已保存',
+    data: response.data,
+    msg: response.msg,
+    detail: response.detail,
+  }
+}
+
+const DELIVERY_DOCUMENT_TYPES_KEY = 'delivery_document_types'
+
+export const getDeliveryDocumentTypes = async (): Promise<{ success: boolean; data?: DeliveryDocumentType[] }> => {
+  try {
+    const setting = await get<{ value: string }>(`/user-settings/${DELIVERY_DOCUMENT_TYPES_KEY}`)
+    const parsed = JSON.parse(setting.value || '[]')
+    if (!Array.isArray(parsed)) {
+      return { success: true, data: [] }
+    }
+    return { success: true, data: parsed as DeliveryDocumentType[] }
+  } catch {
+    return { success: true, data: [] }
+  }
+}
+
+export const updateDeliveryDocumentTypes = async (documentTypes: DeliveryDocumentType[]): Promise<ApiResponse> => {
+  return updateUserSetting(
+    DELIVERY_DOCUMENT_TYPES_KEY,
+    JSON.stringify(documentTypes),
+    '自动发货文档类型配置'
+  )
 }
 
 // 检查是否使用默认密码

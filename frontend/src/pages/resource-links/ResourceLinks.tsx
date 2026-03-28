@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'framer-motion'
-import { AlertTriangle, CheckSquare, Copy, Download, Edit2, ExternalLink, Key, Link2, Loader2, Package, Plus, RefreshCw, Search, Square, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, Check, CheckSquare, ChevronDown, Copy, Download, Edit2, ExternalLink, Key, Link2, Loader2, Package, Plus, RefreshCw, Search, Square, Trash2, Upload, X } from 'lucide-react'
 import { getAccounts } from '@/api/accounts'
 import {
   createResourceLink,
   deleteResourceLink,
   downloadResourceLinksTemplate,
+  exportResourceLinksDocument,
   getResourceLinks,
   getResourceLinkItemAssociations,
   importResourceLinks,
@@ -26,13 +27,8 @@ import type { Account } from '@/types'
 
 type ModalType = 'add' | 'edit' | null
 
-const driveTypeOptions = [
-  { value: '', label: '全部网盘' },
-  { value: 'quark', label: '夸克' },
-  { value: 'baidu', label: '百度' },
-]
-
-const formDriveTypeOptions = driveTypeOptions.filter(option => option.value)
+const resourceTypeSuggestions = ['电视剧', '动漫', '短剧', '电影', '综艺']
+const driveTypeSuggestions = ['夸克', '百度', '阿里云盘', '迅雷云盘', 'UC网盘']
 
 const driveTypeLabels: Record<string, string> = {
   quark: '夸克',
@@ -52,8 +48,126 @@ const associationStatusOptions = [
 
 const initialFormData = {
   resource_name: '',
+  resource_type: '',
   drive_type: '',
   resource_url: '',
+}
+
+function SuggestionInput({
+  value,
+  onChange,
+  options,
+  placeholder,
+  listId,
+  disabled = false,
+}: {
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  placeholder: string
+  listId: string
+  disabled?: boolean
+  showQuickPick?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const normalizedValue = value.trim().toLowerCase()
+  const uniqueOptions = Array.from(new Set(options.map((option) => option.trim()).filter(Boolean)))
+  const hasExactOption = uniqueOptions.some((option) => option.toLowerCase() === normalizedValue)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleSelect = (nextValue: string) => {
+    onChange(nextValue)
+    setIsOpen(false)
+  }
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <div
+        className={`relative flex items-center rounded-2xl border bg-white transition-colors ${
+          disabled
+            ? 'border-slate-200 bg-slate-50 opacity-60'
+            : isOpen
+              ? 'border-transparent ring-2 ring-blue-500'
+              : 'border-slate-300 hover:border-blue-400'
+        }`}
+      >
+        <input
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value)
+            if (!disabled) {
+              setIsOpen(true)
+            }
+          }}
+          onFocus={() => !disabled && setIsOpen(true)}
+          placeholder={placeholder}
+          className="input-ios border-0 bg-transparent pr-12 focus:ring-0 focus:border-transparent"
+          disabled={disabled}
+        />
+        <button
+          type="button"
+          onClick={() => !disabled && setIsOpen((prev) => !prev)}
+          disabled={disabled}
+          className="absolute right-3 inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+          tabIndex={-1}
+        >
+          <ChevronDown className={`h-5 w-5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+
+      {isOpen && !disabled && (
+        <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
+          {value.trim() && !hasExactOption && (
+            <button
+              type="button"
+              onClick={() => handleSelect(value.trim())}
+              className="flex w-full items-center justify-between gap-3 bg-blue-50 px-5 py-4 text-left text-slate-700 transition-colors hover:bg-blue-100"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-base font-medium text-blue-600">{value.trim()}</div>
+                <div className="mt-1 text-xs text-slate-500">使用当前输入作为自定义选项</div>
+              </div>
+              <Check className="h-5 w-5 flex-shrink-0 text-blue-500" />
+            </button>
+          )}
+
+          {uniqueOptions.length === 0 ? (
+            <div className="px-5 py-4 text-sm text-slate-400">暂无匹配选项</div>
+          ) : (
+            uniqueOptions.map((option) => {
+              const isSelected = option.toLowerCase() === normalizedValue
+              return (
+                <button
+                  key={`${listId}-${option}`}
+                  type="button"
+                  onClick={() => handleSelect(option)}
+                  className={`flex w-full items-center justify-between gap-3 px-5 py-4 text-left text-base transition-colors ${
+                    isSelected
+                      ? 'bg-blue-50 text-blue-600'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className="truncate">{option}</span>
+                  {isSelected ? <Check className="h-5 w-5 flex-shrink-0 text-blue-500" /> : null}
+                </button>
+              )
+            })
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const getErrorMessage = (error: unknown, fallback: string) => {
@@ -76,7 +190,10 @@ export function ResourceLinks() {
   const [resourceLinks, setResourceLinks] = useState<ResourceLinkData[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [searchInput, setSearchInput] = useState('')
+  const [resourceTypeFilterInput, setResourceTypeFilterInput] = useState('')
+  const [driveFilterInput, setDriveFilterInput] = useState('')
   const [queryKeyword, setQueryKeyword] = useState('')
+  const [resourceTypeFilter, setResourceTypeFilter] = useState('')
   const [driveFilter, setDriveFilter] = useState('')
   const [activeModal, setActiveModal] = useState<ModalType>(null)
   const [editingLink, setEditingLink] = useState<ResourceLinkData | null>(null)
@@ -85,6 +202,7 @@ export function ResourceLinks() {
   const [submitting, setSubmitting] = useState(false)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importResourceName, setImportResourceName] = useState('')
+  const [importResourceType, setImportResourceType] = useState('')
   const [importContent, setImportContent] = useState('')
   const [importing, setImporting] = useState(false)
   const [importErrors, setImportErrors] = useState<ResourceLinkImportError[]>([])
@@ -94,6 +212,7 @@ export function ResourceLinks() {
   const [csvImporting, setCsvImporting] = useState(false)
   const [csvInputKey, setCsvInputKey] = useState(0)
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
+  const [exportingDocument, setExportingDocument] = useState(false)
   const [associationModalOpen, setAssociationModalOpen] = useState(false)
   const [associationLoading, setAssociationLoading] = useState(false)
   const [associationSaving, setAssociationSaving] = useState(false)
@@ -104,13 +223,18 @@ export function ResourceLinks() {
   const [associationAccountFilter, setAssociationAccountFilter] = useState('')
   const [associationStatusFilter, setAssociationStatusFilter] = useState('all')
 
-  const loadResourceLinks = async (keyword = queryKeyword, driveType = driveFilter) => {
+  const loadResourceLinks = async (
+    keyword = queryKeyword,
+    driveType = driveFilter,
+    resourceType = resourceTypeFilter
+  ) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
       setLoading(true)
       const result = await getResourceLinks({
         keyword: keyword || undefined,
         drive_type: driveType || undefined,
+        resource_type: resourceType || undefined,
       })
       if (result.success) {
         setResourceLinks(result.data || [])
@@ -134,11 +258,13 @@ export function ResourceLinks() {
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     loadResourceLinks()
-  }, [_hasHydrated, isAuthenticated, token, queryKeyword, driveFilter])
+  }, [_hasHydrated, isAuthenticated, token, queryKeyword, driveFilter, resourceTypeFilter])
 
   const handleSearchSubmit = (e: FormEvent) => {
     e.preventDefault()
     setQueryKeyword(searchInput.trim())
+    setResourceTypeFilter(resourceTypeFilterInput.trim())
+    setDriveFilter(driveFilterInput.trim())
   }
 
   const openAddModal = () => {
@@ -154,6 +280,7 @@ export function ResourceLinks() {
     setEditingId(link.id ?? null)
     setFormData({
       resource_name: link.resource_name,
+      resource_type: link.resource_type || '',
       drive_type: link.drive_type,
       resource_url: link.resource_url,
     })
@@ -172,6 +299,7 @@ export function ResourceLinks() {
   const closeImportModal = () => {
     setImportModalOpen(false)
     setImportResourceName('')
+    setImportResourceType('')
     setImportContent('')
     setImportErrors([])
     setImporting(false)
@@ -212,7 +340,7 @@ export function ResourceLinks() {
   const buildDuplicateConfirmText = (duplicates: ResourceLinkImportDuplicate[], message: string) => {
     const preview = duplicates
       .slice(0, 5)
-      .map((item, index) => `${index + 1}. ${item.resource_name} / ${item.drive_type_label}`)
+      .map((item, index) => `${index + 1}. ${item.resource_name} / ${item.resource_type || item.new_resource_type || '-'} / ${item.drive_type_label}`)
       .join('\n')
     const suffix = duplicates.length > 5 ? `\n... 另有 ${duplicates.length - 5} 条重复资源` : ''
     return `${message}\n\n${preview}${suffix}\n\n确认后会更新现有链接。`
@@ -234,6 +362,26 @@ export function ResourceLinks() {
       addToast({ type: 'error', message: getErrorMessage(error, '模板下载失败') })
     } finally {
       setDownloadingTemplate(false)
+    }
+  }
+
+  const handleExportDocument = async () => {
+    try {
+      setExportingDocument(true)
+      const blob = await exportResourceLinksDocument()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = '卡密资源文档.md'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+      addToast({ type: 'success', message: '资源文档已开始下载' })
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '导出文档失败') })
+    } finally {
+      setExportingDocument(false)
     }
   }
 
@@ -281,8 +429,12 @@ export function ResourceLinks() {
       addToast({ type: 'warning', message: '请输入资源名称' })
       return
     }
+    if (!formData.resource_type.trim()) {
+      addToast({ type: 'warning', message: '请输入资源类型' })
+      return
+    }
     if (!formData.drive_type) {
-      addToast({ type: 'warning', message: '请选择网盘类型' })
+      addToast({ type: 'warning', message: '请输入网盘类型' })
       return
     }
     if (!formData.resource_url.trim()) {
@@ -294,7 +446,8 @@ export function ResourceLinks() {
     try {
       const payload = {
         resource_name: formData.resource_name.trim(),
-        drive_type: formData.drive_type as 'quark' | 'baidu',
+        resource_type: formData.resource_type.trim(),
+        drive_type: formData.drive_type.trim(),
         resource_url: formData.resource_url.trim(),
       }
 
@@ -320,6 +473,10 @@ export function ResourceLinks() {
       addToast({ type: 'warning', message: '请输入资源名称' })
       return
     }
+    if (!importResourceType.trim()) {
+      addToast({ type: 'warning', message: '请输入资源类型' })
+      return
+    }
     if (!importContent.trim()) {
       addToast({ type: 'warning', message: '请输入分享口令内容' })
       return
@@ -331,6 +488,7 @@ export function ResourceLinks() {
     try {
       const firstPass = await importResourceLinks({
         resource_name: importResourceName.trim(),
+        resource_type: importResourceType.trim(),
         content: importContent.trim(),
         confirm_update: false,
       })
@@ -351,6 +509,7 @@ export function ResourceLinks() {
 
         const secondPass = await importResourceLinks({
           resource_name: importResourceName.trim(),
+          resource_type: importResourceType.trim(),
           content: importContent.trim(),
           confirm_update: true,
         })
@@ -471,9 +630,13 @@ export function ResourceLinks() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="page-title">卡密管理</h1>
-          <p className="page-description">保存资源名称、网盘类型和网盘链接，支持分享口令导入和 CSV 批量导入</p>
+          <p className="page-description">保存资源名称、资源类型、网盘类型和网盘链接，支持分享口令导入、CSV 批量导入和一键导出文档</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <button onClick={handleExportDocument} disabled={exportingDocument} className="btn-ios-secondary">
+            {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            导出文档
+          </button>
           <button onClick={handleDownloadTemplate} disabled={downloadingTemplate} className="btn-ios-secondary">
             {downloadingTemplate ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             下载模板
@@ -504,15 +667,15 @@ export function ResourceLinks() {
         </div>
         <div className="vben-card p-4">
           <div className="text-2xl font-bold text-cyan-600">
-            {resourceLinks.filter(link => link.drive_type === 'quark').length}
+            {resourceLinks.filter(link => (link.association_count || 0) > 0).length}
           </div>
-          <div className="text-sm text-slate-500">夸克资源</div>
+          <div className="text-sm text-slate-500">已关联商品</div>
         </div>
         <div className="vben-card p-4">
           <div className="text-2xl font-bold text-amber-600">
-            {resourceLinks.filter(link => link.drive_type === 'baidu').length}
+            {resourceLinks.filter(link => !['quark', 'baidu'].includes((link.drive_type || '').toLowerCase())).length}
           </div>
-          <div className="text-sm text-slate-500">百度资源</div>
+          <div className="text-sm text-slate-500">自定义网盘</div>
         </div>
       </div>
 
@@ -530,28 +693,41 @@ export function ResourceLinks() {
         </div>
         <div className="vben-card-body space-y-4">
           <form onSubmit={handleSearchSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            <div className="lg:col-span-6">
+            <div className="lg:col-span-4">
               <label className="input-label mb-1">资源名称</label>
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="搜索电视名称、动漫名称"
+                  placeholder="搜索资源名称"
                   className="input-ios pl-9"
                 />
               </div>
             </div>
             <div className="lg:col-span-3">
-              <label className="input-label mb-1">网盘类型</label>
-              <Select
-                value={driveFilter}
-                onChange={setDriveFilter}
-                options={driveTypeOptions}
-                placeholder="全部网盘"
+              <label className="input-label mb-1">资源类型</label>
+              <SuggestionInput
+                value={resourceTypeFilterInput}
+                onChange={setResourceTypeFilterInput}
+                options={resourceTypeSuggestions}
+                placeholder="全部资源类型"
+                listId="resource-type-filter-options"
+                showQuickPick={false}
               />
             </div>
-            <div className="lg:col-span-3 flex items-end gap-3">
+            <div className="lg:col-span-3">
+              <label className="input-label mb-1">网盘类型</label>
+              <SuggestionInput
+                value={driveFilterInput}
+                onChange={setDriveFilterInput}
+                options={driveTypeSuggestions}
+                placeholder="全部网盘"
+                listId="drive-type-filter-options"
+                showQuickPick={false}
+              />
+            </div>
+            <div className="lg:col-span-2 flex items-end gap-3">
               <button type="submit" className="btn-ios-primary flex-1">
                 <Search className="w-4 h-4" />
                 搜索
@@ -560,7 +736,10 @@ export function ResourceLinks() {
                 type="button"
                 onClick={() => {
                   setSearchInput('')
+                  setResourceTypeFilterInput('')
+                  setDriveFilterInput('')
                   setQueryKeyword('')
+                  setResourceTypeFilter('')
                   setDriveFilter('')
                 }}
                 className="btn-ios-secondary"
@@ -575,6 +754,7 @@ export function ResourceLinks() {
               <thead>
                 <tr>
                   <th>资源名称</th>
+                  <th>资源类型</th>
                   <th>网盘类型</th>
                   <th>资源链接</th>
                   <th>关联商品</th>
@@ -585,7 +765,7 @@ export function ResourceLinks() {
               <tbody>
                 {resourceLinks.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-10 text-slate-500">
+                    <td colSpan={7} className="text-center py-10 text-slate-500">
                       <div className="flex flex-col items-center gap-2">
                         <Link2 className="w-12 h-12 text-slate-300" />
                         <p>暂无卡密资源</p>
@@ -596,6 +776,11 @@ export function ResourceLinks() {
                   resourceLinks.map((link) => (
                     <tr key={link.id}>
                       <td className="font-medium">{link.resource_name}</td>
+                      <td>
+                        <span className="badge-gray">
+                          {link.resource_type || '-'}
+                        </span>
+                      </td>
                       <td>
                         <span className={driveTypeBadges[link.drive_type] || 'badge-gray'}>
                           {driveTypeLabels[link.drive_type] || link.drive_type}
@@ -707,7 +892,7 @@ export function ResourceLinks() {
                 <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                   {activeModal === 'add' ? '新增卡密资源' : '编辑卡密资源'}
                 </h3>
-                <p className="text-sm text-slate-500 mt-1">同一资源名称下，同一网盘类型只允许保存一条记录。</p>
+                <p className="text-sm text-slate-500 mt-1">同一资源名称下，同一网盘类型只允许保存一条记录，资源类型可自由维护。</p>
               </div>
               <button onClick={closeModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
                 <X className="w-4 h-4" />
@@ -726,12 +911,24 @@ export function ResourceLinks() {
               </div>
 
               <div>
+                <label className="input-label mb-1">资源类型</label>
+                <SuggestionInput
+                  value={formData.resource_type}
+                  onChange={(value) => setFormData(prev => ({ ...prev, resource_type: value }))}
+                  options={resourceTypeSuggestions}
+                  placeholder="例如：电视剧"
+                  listId="resource-type-form-options"
+                />
+              </div>
+
+              <div>
                 <label className="input-label mb-1">网盘类型</label>
-                <Select
+                <SuggestionInput
                   value={formData.drive_type}
                   onChange={(value) => setFormData(prev => ({ ...prev, drive_type: value }))}
-                  options={formDriveTypeOptions}
-                  placeholder="选择网盘类型"
+                  options={driveTypeSuggestions}
+                  placeholder="例如：夸克、百度、阿里云盘"
+                  listId="drive-type-form-options"
                   disabled={Boolean(editingLink && (editingLink.association_count || 0) > 0)}
                 />
                 {editingLink && (editingLink.association_count || 0) > 0 && (
@@ -781,7 +978,7 @@ export function ResourceLinks() {
 
             <div className="p-5 space-y-4">
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-600 dark:text-slate-300 space-y-1">
-                <p>资源名称由你手动填写，系统只从口令里识别夸克/百度和对应链接。</p>
+                <p>资源名称、资源类型由你手动填写，系统只从口令里识别夸克/百度和对应链接。</p>
                 <p>若“资源名称 + 网盘类型”已存在，会先提示确认，确认后执行更新。</p>
               </div>
 
@@ -792,6 +989,17 @@ export function ResourceLinks() {
                   onChange={(e) => setImportResourceName(e.target.value)}
                   placeholder="例如：真相捕捉3"
                   className="input-ios"
+                />
+              </div>
+
+              <div>
+                <label className="input-label mb-1">资源类型</label>
+                <SuggestionInput
+                  value={importResourceType}
+                  onChange={setImportResourceType}
+                  options={resourceTypeSuggestions}
+                  placeholder="例如：电视剧"
+                  listId="resource-type-import-options"
                 />
               </div>
 
@@ -858,7 +1066,10 @@ export function ResourceLinks() {
                         <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                           {associationResource.resource_name}
                         </div>
-                        <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="badge-gray">
+                            {associationResource.resource_type || '未分类'}
+                          </span>
                           <span className={driveTypeBadges[associationResource.drive_type] || 'badge-gray'}>
                             {driveTypeLabels[associationResource.drive_type] || associationResource.drive_type}
                           </span>
@@ -1069,8 +1280,8 @@ export function ResourceLinks() {
 
             <div className="p-5 space-y-4">
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-600 dark:text-slate-300 space-y-1">
-                <p>模板列为：`资源名称`、`网盘类型`、`资源链接`。</p>
-                <p>网盘类型支持：夸克、百度、quark、baidu。</p>
+                <p>模板列为：`资源名称`、`资源类型`、`网盘类型`、`资源链接`。</p>
+                <p>资源类型支持预设项，也支持手动填写；网盘类型同样支持手动填写。</p>
                 <p>如果 CSV 中出现重复资源，系统会直接更新现有链接，不再二次确认。</p>
               </div>
 

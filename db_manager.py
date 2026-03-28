@@ -221,7 +221,8 @@ class DBManager:
             CREATE TABLE IF NOT EXISTS resource_links (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resource_name TEXT NOT NULL,
-                drive_type TEXT NOT NULL CHECK (drive_type IN ('quark', 'baidu')),
+                resource_type TEXT NOT NULL DEFAULT '',
+                drive_type TEXT NOT NULL,
                 resource_url TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -316,7 +317,7 @@ class DBManager:
                 resource_link_id INTEGER NOT NULL,
                 item_info_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                drive_type TEXT NOT NULL CHECK (drive_type IN ('quark', 'baidu')),
+                drive_type TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (resource_link_id) REFERENCES resource_links(id) ON DELETE CASCADE,
@@ -327,20 +328,6 @@ class DBManager:
                 UNIQUE(user_id, item_info_id, drive_type)
             )
             ''')
-
-            cursor.execute('''
-            DELETE FROM resource_link_items
-            WHERE id NOT IN (
-                SELECT MAX(id)
-                FROM resource_link_items
-                GROUP BY resource_link_id
-            )
-            ''')
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_link_id ON resource_link_items(resource_link_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_item_id ON resource_link_items(item_info_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_user_drive ON resource_link_items(user_id, drive_type)")
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_link_items_resource_unique ON resource_link_items(resource_link_id)")
 
             # 检查并添加 multi_quantity_delivery 列（用于多数量发货功能）
             try:
@@ -356,14 +343,18 @@ class DBManager:
             CREATE TABLE IF NOT EXISTS delivery_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 keyword TEXT NOT NULL,
-                card_id INTEGER NOT NULL,
+                card_id INTEGER,
+                document_type_id TEXT,
+                delivery_mode TEXT NOT NULL DEFAULT 'card' CHECK (delivery_mode IN ('card', 'resource_link')),
                 delivery_count INTEGER DEFAULT 1,
                 enabled BOOLEAN DEFAULT TRUE,
                 description TEXT,
                 delivery_times INTEGER DEFAULT 0,
+                user_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             ''')
 
@@ -571,10 +562,207 @@ class DBManager:
                 cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 10")
                 logger.info("数据库迁移完成：添加pause_duration列")
 
+            self._migrate_resource_link_tables(cursor)
+            self._ensure_resource_link_indexes(cursor)
+            self._migrate_delivery_rules_table(cursor)
+
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
             # 迁移失败不应该阻止程序启动
             pass
+
+    def _migrate_resource_link_tables(self, cursor):
+        """升级资源表结构，支持资源类型和自定义网盘类型"""
+        try:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='resource_links'")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(resource_links)")
+                resource_link_columns = cursor.fetchall()
+                resource_link_column_names = [column[1] for column in resource_link_columns]
+                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='resource_links'")
+                resource_link_sql_row = cursor.fetchone()
+                resource_link_sql = (resource_link_sql_row[0] or '').lower() if resource_link_sql_row else ''
+
+                needs_rebuild_resource_links = (
+                    'resource_type' not in resource_link_column_names
+                    or ('drive_type' in resource_link_sql and 'check' in resource_link_sql and 'quark' in resource_link_sql and 'baidu' in resource_link_sql)
+                )
+
+                if needs_rebuild_resource_links:
+                    logger.info("开始升级resource_links表结构，支持资源类型和自定义网盘类型...")
+                    cursor.execute("DROP TABLE IF EXISTS resource_links_new")
+                    cursor.execute('''
+                    CREATE TABLE resource_links_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        resource_name TEXT NOT NULL,
+                        resource_type TEXT NOT NULL DEFAULT '',
+                        drive_type TEXT NOT NULL,
+                        resource_url TEXT NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                        UNIQUE(resource_name, drive_type, user_id)
+                    )
+                    ''')
+
+                    resource_type_select = "COALESCE(resource_type, '')" if 'resource_type' in resource_link_column_names else "''"
+                    cursor.execute(f'''
+                    INSERT INTO resource_links_new (
+                        id, resource_name, resource_type, drive_type, resource_url,
+                        user_id, created_at, updated_at
+                    )
+                    SELECT
+                        id, resource_name, {resource_type_select}, drive_type, resource_url,
+                        user_id, created_at, updated_at
+                    FROM resource_links
+                    ''')
+
+                    cursor.execute("DROP TABLE resource_links")
+                    cursor.execute("ALTER TABLE resource_links_new RENAME TO resource_links")
+                    logger.info("resource_links表结构升级完成")
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='resource_link_items'")
+            if cursor.fetchone():
+                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='resource_link_items'")
+                resource_link_items_sql_row = cursor.fetchone()
+                resource_link_items_sql = (resource_link_items_sql_row[0] or '').lower() if resource_link_items_sql_row else ''
+
+                needs_rebuild_resource_link_items = (
+                    'drive_type' in resource_link_items_sql
+                    and 'check' in resource_link_items_sql
+                    and 'quark' in resource_link_items_sql
+                    and 'baidu' in resource_link_items_sql
+                )
+
+                if needs_rebuild_resource_link_items:
+                    logger.info("开始升级resource_link_items表结构，支持自定义网盘类型...")
+                    cursor.execute("DROP TABLE IF EXISTS resource_link_items_new")
+                    cursor.execute('''
+                    CREATE TABLE resource_link_items_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        resource_link_id INTEGER NOT NULL,
+                        item_info_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        drive_type TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (resource_link_id) REFERENCES resource_links(id) ON DELETE CASCADE,
+                        FOREIGN KEY (item_info_id) REFERENCES item_info(id) ON DELETE CASCADE,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        UNIQUE(resource_link_id),
+                        UNIQUE(resource_link_id, item_info_id),
+                        UNIQUE(user_id, item_info_id, drive_type)
+                    )
+                    ''')
+
+                    cursor.execute('''
+                    INSERT INTO resource_link_items_new (
+                        id, resource_link_id, item_info_id, user_id, drive_type,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        id, resource_link_id, item_info_id, user_id, drive_type,
+                        created_at, updated_at
+                    FROM resource_link_items
+                    ''')
+
+                    cursor.execute("DROP TABLE resource_link_items")
+                    cursor.execute("ALTER TABLE resource_link_items_new RENAME TO resource_link_items")
+                    logger.info("resource_link_items表结构升级完成")
+        except Exception as e:
+            logger.error(f"升级资源表失败: {e}")
+            raise
+
+    def _ensure_resource_link_indexes(self, cursor):
+        """确保资源表索引和单资源单商品约束清理逻辑已就绪"""
+        cursor.execute('''
+        DELETE FROM resource_link_items
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM resource_link_items
+            GROUP BY resource_link_id
+        )
+        ''')
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_user_id ON resource_links(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_name ON resource_links(resource_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_type ON resource_links(resource_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_drive_type ON resource_links(drive_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_link_id ON resource_link_items(resource_link_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_item_id ON resource_link_items(item_info_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_user_drive ON resource_link_items(user_id, drive_type)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_link_items_resource_unique ON resource_link_items(resource_link_id)")
+
+    def _migrate_delivery_rules_table(self, cursor):
+        """升级delivery_rules表结构，支持资源卡密发货模式"""
+        try:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_rules'")
+            if not cursor.fetchone():
+                return
+
+            cursor.execute("PRAGMA table_info(delivery_rules)")
+            columns = cursor.fetchall()
+            column_names = [column[1] for column in columns]
+            card_id_column = next((column for column in columns if column[1] == 'card_id'), None)
+            needs_rebuild = (
+                'document_type_id' not in column_names
+                or 'delivery_mode' not in column_names
+                or (card_id_column is not None and card_id_column[3] == 1)
+            )
+
+            if not needs_rebuild:
+                return
+
+            logger.info("开始升级delivery_rules表结构，支持商品关联卡密发货...")
+            cursor.execute("DROP TABLE IF EXISTS delivery_rules_new")
+            cursor.execute('''
+            CREATE TABLE delivery_rules_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                card_id INTEGER,
+                document_type_id TEXT,
+                delivery_mode TEXT NOT NULL DEFAULT 'card' CHECK (delivery_mode IN ('card', 'resource_link')),
+                delivery_count INTEGER DEFAULT 1,
+                enabled BOOLEAN DEFAULT TRUE,
+                description TEXT,
+                delivery_times INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_id INTEGER,
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+
+            cursor.execute(f'''
+            INSERT INTO delivery_rules_new (
+                id, keyword, card_id, document_type_id, delivery_mode,
+                delivery_count, enabled, description, delivery_times,
+                created_at, updated_at, user_id
+            )
+                SELECT
+                    id,
+                    keyword,
+                    card_id,
+                { "NULL" if 'document_type_id' not in column_names else "document_type_id" },
+                { "'card'" if 'delivery_mode' not in column_names else "COALESCE(delivery_mode, 'card')" },
+                delivery_count,
+                enabled,
+                description,
+                delivery_times,
+                created_at,
+                updated_at,
+                { "user_id" if 'user_id' in column_names else "NULL" }
+            FROM delivery_rules
+            ''')
+
+            cursor.execute("DROP TABLE delivery_rules")
+            cursor.execute("ALTER TABLE delivery_rules_new RENAME TO delivery_rules")
+            logger.info("delivery_rules表结构升级完成")
+        except Exception as e:
+            logger.error(f"升级delivery_rules表失败: {e}")
+            raise
 
     def _update_cards_table_constraints(self, cursor):
         """更新cards表的CHECK约束以支持image类型"""
@@ -3141,21 +3329,22 @@ class DBManager:
 
     def _serialize_resource_link_row(self, row, cursor=None) -> Dict[str, Any]:
         local_cursor = cursor or self.conn.cursor()
-        association_count = row[6] if len(row) > 6 else self._get_resource_link_association_count(local_cursor, row[0])
+        association_count = row[7] if len(row) > 7 else self._get_resource_link_association_count(local_cursor, row[0])
         return {
             'id': row[0],
             'resource_name': row[1],
-            'drive_type': row[2],
-            'resource_url': row[3],
-            'created_at': row[4],
-            'updated_at': row[5],
+            'resource_type': row[2],
+            'drive_type': row[3],
+            'resource_url': row[4],
+            'created_at': row[5],
+            'updated_at': row[6],
             'association_count': association_count or 0,
             'associated_items': self._get_resource_link_item_previews(local_cursor, row[0], limit=1),
         }
 
     def _get_resource_link_core(self, cursor, link_id: int, user_id: int):
         self._execute_sql(cursor, '''
-        SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
+        SELECT rl.id, rl.resource_name, rl.resource_type, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
                (
                    SELECT COUNT(*)
                    FROM resource_link_items rli
@@ -3166,13 +3355,13 @@ class DBManager:
         ''', (link_id, user_id))
         return cursor.fetchone()
 
-    def list_resource_links(self, user_id: int, keyword: str = None, drive_type: str = None):
+    def list_resource_links(self, user_id: int, keyword: str = None, drive_type: str = None, resource_type: str = None):
         """获取卡密资源列表"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 sql = '''
-                SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
+                SELECT rl.id, rl.resource_name, rl.resource_type, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
                        (
                            SELECT COUNT(*)
                            FROM resource_link_items rli
@@ -3186,8 +3375,11 @@ class DBManager:
                 if keyword:
                     sql += " AND rl.resource_name LIKE ?"
                     params.append(f"%{keyword.strip()}%")
+                if resource_type:
+                    sql += " AND rl.resource_type LIKE ?"
+                    params.append(f"%{resource_type.strip()}%")
                 if drive_type:
-                    sql += " AND rl.drive_type = ?"
+                    sql += " AND LOWER(rl.drive_type) = LOWER(?)"
                     params.append(drive_type.strip())
 
                 sql += " ORDER BY rl.updated_at DESC, rl.id DESC"
@@ -3215,7 +3407,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 self._execute_sql(cursor, '''
-                SELECT id, resource_name, drive_type, resource_url, created_at, updated_at
+                SELECT id, resource_name, resource_type, drive_type, resource_url, created_at, updated_at
                 FROM resource_links
                 WHERE resource_name = ? AND drive_type = ? AND user_id = ?
                 ''', (resource_name.strip(), drive_type.strip(), user_id))
@@ -3225,11 +3417,12 @@ class DBManager:
                 logger.error(f"按唯一键获取卡密资源失败: {e}")
                 return None
 
-    def create_resource_link(self, resource_name: str, drive_type: str, resource_url: str, user_id: int):
+    def create_resource_link(self, resource_name: str, resource_type: str, drive_type: str, resource_url: str, user_id: int):
         """创建卡密资源"""
         with self.lock:
             try:
                 resource_name = resource_name.strip()
+                resource_type = resource_type.strip()
                 drive_type = drive_type.strip()
                 resource_url = resource_url.strip()
 
@@ -3242,12 +3435,12 @@ class DBManager:
                     raise ValueError(f"资源已存在：{resource_name} / {drive_type}")
 
                 self._execute_sql(cursor, '''
-                INSERT INTO resource_links (resource_name, drive_type, resource_url, user_id)
-                VALUES (?, ?, ?, ?)
-                ''', (resource_name, drive_type, resource_url, user_id))
+                INSERT INTO resource_links (resource_name, resource_type, drive_type, resource_url, user_id)
+                VALUES (?, ?, ?, ?, ?)
+                ''', (resource_name, resource_type, drive_type, resource_url, user_id))
                 self.conn.commit()
                 link_id = cursor.lastrowid
-                logger.info(f"创建卡密资源成功: {resource_name} / {drive_type} (ID: {link_id})")
+                logger.info(f"创建卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {link_id})")
                 return link_id
             except Exception as e:
                 logger.error(f"创建卡密资源失败: {e}")
@@ -3255,13 +3448,13 @@ class DBManager:
                 raise
 
     def update_resource_link(self, link_id: int, user_id: int, resource_name: str = None,
-                             drive_type: str = None, resource_url: str = None):
+                             resource_type: str = None, drive_type: str = None, resource_url: str = None):
         """更新卡密资源"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 self._execute_sql(cursor, '''
-                SELECT resource_name, drive_type, resource_url
+                SELECT resource_name, resource_type, drive_type, resource_url
                 FROM resource_links
                 WHERE id = ? AND user_id = ?
                 ''', (link_id, user_id))
@@ -3270,10 +3463,11 @@ class DBManager:
                     return False
 
                 next_resource_name = resource_name.strip() if resource_name is not None else current[0]
-                next_drive_type = drive_type.strip() if drive_type is not None else current[1]
-                next_resource_url = resource_url.strip() if resource_url is not None else current[2]
+                next_resource_type = resource_type.strip() if resource_type is not None else current[1]
+                next_drive_type = drive_type.strip() if drive_type is not None else current[2]
+                next_resource_url = resource_url.strip() if resource_url is not None else current[3]
 
-                if next_drive_type != current[1]:
+                if next_drive_type != current[2]:
                     association_count = self._get_resource_link_association_count(cursor, link_id)
                     if association_count > 0:
                         raise ValueError("当前资源已关联商品，需先解除关联后才能修改网盘类型")
@@ -3287,9 +3481,9 @@ class DBManager:
 
                 self._execute_sql(cursor, '''
                 UPDATE resource_links
-                SET resource_name = ?, drive_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                SET resource_name = ?, resource_type = ?, drive_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-                ''', (next_resource_name, next_drive_type, next_resource_url, link_id, user_id))
+                ''', (next_resource_name, next_resource_type, next_drive_type, next_resource_url, link_id, user_id))
                 self.conn.commit()
                 logger.info(f"更新卡密资源成功: ID {link_id}")
                 return cursor.rowcount > 0
@@ -3365,7 +3559,7 @@ class DBManager:
                 if not resource_row:
                     return None
 
-                drive_type = resource_row[2]
+                drive_type = resource_row[3]
                 normalized_ids = []
                 for item_info_id in item_info_ids or []:
                     normalized_id = int(item_info_id)
@@ -3449,11 +3643,48 @@ class DBManager:
                 self.conn.rollback()
                 raise
 
-    def upsert_resource_link(self, resource_name: str, drive_type: str, resource_url: str, user_id: int):
+    def get_resource_links_for_delivery_item(self, cookie_id: str, item_id: str, user_id: int):
+        """获取商品已关联的资源链接，供自动发货使用"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.updated_at
+                FROM item_info i
+                INNER JOIN cookies c ON c.id = i.cookie_id
+                INNER JOIN resource_link_items rli ON rli.item_info_id = i.id
+                INNER JOIN resource_links rl ON rl.id = rli.resource_link_id
+                WHERE i.cookie_id = ? AND i.item_id = ? AND c.user_id = ? AND rl.user_id = ?
+                ORDER BY
+                    CASE rl.drive_type
+                        WHEN 'baidu' THEN 0
+                        WHEN 'quark' THEN 1
+                        ELSE 9
+                    END,
+                    rl.updated_at DESC,
+                    rl.id DESC
+                ''', (cookie_id, item_id, user_id, user_id))
+
+                links = []
+                for row in cursor.fetchall():
+                    links.append({
+                        'id': row[0],
+                        'resource_name': row[1],
+                        'drive_type': row[2],
+                        'resource_url': row[3],
+                        'updated_at': row[4],
+                    })
+                return links
+            except Exception as e:
+                logger.error(f"获取商品关联资源链接失败: cookie_id={cookie_id}, item_id={item_id}, error={e}")
+                return []
+
+    def upsert_resource_link(self, resource_name: str, resource_type: str, drive_type: str, resource_url: str, user_id: int):
         """按资源名称+网盘类型创建或更新卡密资源"""
         with self.lock:
             try:
                 resource_name = resource_name.strip()
+                resource_type = resource_type.strip()
                 drive_type = drive_type.strip()
                 resource_url = resource_url.strip()
 
@@ -3468,19 +3699,19 @@ class DBManager:
                 if existing:
                     self._execute_sql(cursor, '''
                     UPDATE resource_links
-                    SET resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                    SET resource_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND user_id = ?
-                    ''', (resource_url, existing[0], user_id))
+                    ''', (resource_type, resource_url, existing[0], user_id))
                     self.conn.commit()
-                    logger.info(f"更新卡密资源成功: {resource_name} / {drive_type} (ID: {existing[0]})")
+                    logger.info(f"更新卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {existing[0]})")
                     return {'id': existing[0], 'action': 'updated'}
 
                 self._execute_sql(cursor, '''
-                INSERT INTO resource_links (resource_name, drive_type, resource_url, user_id)
-                VALUES (?, ?, ?, ?)
-                ''', (resource_name, drive_type, resource_url, user_id))
+                INSERT INTO resource_links (resource_name, resource_type, drive_type, resource_url, user_id)
+                VALUES (?, ?, ?, ?, ?)
+                ''', (resource_name, resource_type, drive_type, resource_url, user_id))
                 self.conn.commit()
-                logger.info(f"创建卡密资源成功: {resource_name} / {drive_type} (ID: {cursor.lastrowid})")
+                logger.info(f"创建卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {cursor.lastrowid})")
                 return {'id': cursor.lastrowid, 'action': 'created'}
             except Exception as e:
                 logger.error(f"导入卡密资源失败: {e}")
@@ -3789,19 +4020,49 @@ class DBManager:
 
     # ==================== 自动发货规则方法 ====================
 
-    def create_delivery_rule(self, keyword: str, card_id: int, delivery_count: int = 1,
-                           enabled: bool = True, description: str = None, user_id: int = None):
+    def create_delivery_rule(self, keyword: str, card_id: int = None, delivery_count: int = 1,
+                           enabled: bool = True, description: str = None, user_id: int = None,
+                           delivery_mode: str = 'card', document_type_id: str = None):
         """创建发货规则"""
         with self.lock:
             try:
+                delivery_mode = (delivery_mode or 'card').strip() or 'card'
+                if delivery_mode not in ('card', 'resource_link'):
+                    raise ValueError("不支持的发货模式")
+                if delivery_mode == 'card' and not card_id:
+                    raise ValueError("卡券发货模式必须选择卡券")
+                if delivery_mode == 'resource_link':
+                    card_id = None
+                    if not str(document_type_id or '').strip():
+                        raise ValueError("关联商品卡密发货模式必须选择文档类型")
+                    if user_id is not None:
+                        document_type = self.get_delivery_document_type_by_id(user_id, str(document_type_id).strip())
+                        if not document_type or not document_type.get('enabled', True):
+                            raise ValueError("所选文档类型不存在或已停用")
+
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT INTO delivery_rules (keyword, card_id, delivery_count, enabled, description, user_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (keyword, card_id, delivery_count, enabled, description, user_id))
+                INSERT INTO delivery_rules (
+                    keyword, card_id, document_type_id, delivery_mode,
+                    delivery_count, enabled, description, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    keyword,
+                    card_id,
+                    str(document_type_id or '').strip() or None,
+                    delivery_mode,
+                    delivery_count,
+                    enabled,
+                    description,
+                    user_id
+                ))
                 self.conn.commit()
                 rule_id = cursor.lastrowid
-                logger.info(f"创建发货规则成功: {keyword} -> 卡券ID {card_id} (规则ID: {rule_id})")
+                logger.info(
+                    f"创建发货规则成功: keyword={keyword}, delivery_mode={delivery_mode}, "
+                    f"card_id={card_id}, document_type_id={document_type_id}, rule_id={rule_id}"
+                )
                 return rule_id
             except Exception as e:
                 logger.error(f"创建发货规则失败: {e}")
@@ -3817,7 +4078,8 @@ class DBManager:
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.delivery_mode, dr.document_type_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.user_id = ?
@@ -3828,11 +4090,19 @@ class DBManager:
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.delivery_mode, dr.document_type_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     ORDER BY dr.created_at DESC
                     ''')
+
+                document_type_map = {}
+                if user_id is not None:
+                    document_type_map = {
+                        item['id']: item['name']
+                        for item in self.get_delivery_document_types(user_id)
+                    }
 
                 rules = []
                 for row in cursor.fetchall():
@@ -3850,7 +4120,10 @@ class DBManager:
                         'card_type': row[10],
                         'is_multi_spec': bool(row[11]) if row[11] is not None else False,
                         'spec_name': row[12],
-                        'spec_value': row[13]
+                        'spec_value': row[13],
+                        'delivery_mode': row[14] or 'card',
+                        'document_type_id': row[15],
+                        'document_type_name': document_type_map.get(row[15], '') if row[15] else '',
                     })
 
                 return rules
@@ -3858,30 +4131,50 @@ class DBManager:
                 logger.error(f"获取发货规则列表失败: {e}")
                 return []
 
-    def get_delivery_rules_by_keyword(self, keyword: str):
+    def get_delivery_rules_by_keyword(self, keyword: str, user_id: int = None):
         """根据关键字获取匹配的发货规则"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 # 使用更灵活的匹配方式：既支持商品内容包含关键字，也支持关键字包含在商品内容中
-                cursor.execute('''
+                params = [keyword, keyword]
+                user_filter = ""
+                if user_id is not None:
+                    user_filter = " AND dr.user_id = ?"
+                    params.append(user_id)
+                params.append(keyword)
+
+                cursor.execute(f'''
                 SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.image_url, c.enabled as card_enabled, c.description as card_description,
                        c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
+                       c.is_multi_spec, c.spec_name, c.spec_value,
+                       dr.delivery_mode, dr.document_type_id
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
+                WHERE dr.enabled = 1
                 AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
+                {user_filter}
+                AND (
+                    (dr.delivery_mode = 'resource_link')
+                    OR (COALESCE(dr.delivery_mode, 'card') = 'card' AND c.enabled = 1)
+                )
                 ORDER BY
                     CASE
                         WHEN ? LIKE '%' || dr.keyword || '%' THEN LENGTH(dr.keyword)
                         ELSE LENGTH(dr.keyword) / 2
                     END DESC,
                     dr.id ASC
-                ''', (keyword, keyword, keyword))
+                ''', tuple(params))
+
+                document_type_map = {}
+                if user_id is not None:
+                    document_type_map = {
+                        item['id']: item['name']
+                        for item in self.get_delivery_document_types(user_id)
+                    }
 
                 rules = []
                 for row in cursor.fetchall():
@@ -3914,7 +4207,10 @@ class DBManager:
                         'card_delay_seconds': row[15] or 0,  # 延时秒数
                         'is_multi_spec': bool(row[16]) if row[16] is not None else False,
                         'spec_name': row[17],
-                        'spec_value': row[18]
+                        'spec_value': row[18],
+                        'delivery_mode': row[19] or 'card',
+                        'document_type_id': row[20],
+                        'document_type_name': document_type_map.get(row[20], '') if row[20] else '',
                     })
 
                 return rules
@@ -3931,7 +4227,8 @@ class DBManager:
                     self._execute_sql(cursor, '''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
-                           c.name as card_name, c.type as card_type
+                           c.name as card_name, c.type as card_type,
+                           dr.delivery_mode, dr.document_type_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ? AND dr.user_id = ?
@@ -3940,7 +4237,8 @@ class DBManager:
                     self._execute_sql(cursor, '''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
-                           c.name as card_name, c.type as card_type
+                           c.name as card_name, c.type as card_type,
+                           dr.delivery_mode, dr.document_type_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ?
@@ -3948,6 +4246,10 @@ class DBManager:
 
                 row = cursor.fetchone()
                 if row:
+                    document_type_name = ''
+                    if user_id is not None and row[12]:
+                        document_type = self.get_delivery_document_type_by_id(user_id, row[12])
+                        document_type_name = document_type['name'] if document_type else ''
                     return {
                         'id': row[0],
                         'keyword': row[1],
@@ -3959,7 +4261,10 @@ class DBManager:
                         'created_at': row[7],
                         'updated_at': row[8],
                         'card_name': row[9],
-                        'card_type': row[10]
+                        'card_type': row[10],
+                        'delivery_mode': row[11] or 'card',
+                        'document_type_id': row[12],
+                        'document_type_name': document_type_name,
                     }
                 return None
             except Exception as e:
@@ -3968,11 +4273,35 @@ class DBManager:
 
     def update_delivery_rule(self, rule_id: int, keyword: str = None, card_id: int = None,
                            delivery_count: int = None, enabled: bool = None,
-                           description: str = None, user_id: int = None):
+                           description: str = None, user_id: int = None,
+                           delivery_mode: str = None, document_type_id: str = None):
         """更新发货规则（支持用户隔离）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+
+                current_rule = self.get_delivery_rule_by_id(rule_id, user_id)
+                if not current_rule:
+                    return False
+
+                next_delivery_mode = (delivery_mode if delivery_mode is not None else current_rule.get('delivery_mode') or 'card').strip() or 'card'
+                next_card_id = card_id if card_id is not None else current_rule.get('card_id')
+                next_document_type_id = (
+                    str(document_type_id).strip()
+                    if document_type_id is not None
+                    else (str(current_rule.get('document_type_id') or '').strip() or None)
+                )
+
+                if next_delivery_mode not in ('card', 'resource_link'):
+                    raise ValueError("不支持的发货模式")
+                if next_delivery_mode == 'card' and not next_card_id:
+                    raise ValueError("卡券发货模式必须选择卡券")
+                if next_delivery_mode == 'resource_link' and not next_document_type_id:
+                    raise ValueError("关联商品卡密发货模式必须选择文档类型")
+                if next_delivery_mode == 'resource_link' and user_id is not None:
+                    document_type = self.get_delivery_document_type_by_id(user_id, next_document_type_id)
+                    if not document_type or not document_type.get('enabled', True):
+                        raise ValueError("所选文档类型不存在或已停用")
 
                 # 构建更新语句
                 update_fields = []
@@ -3983,7 +4312,13 @@ class DBManager:
                     params.append(keyword)
                 if card_id is not None:
                     update_fields.append("card_id = ?")
-                    params.append(card_id)
+                    params.append(card_id if next_delivery_mode == 'card' else None)
+                if delivery_mode is not None:
+                    update_fields.append("delivery_mode = ?")
+                    params.append(next_delivery_mode)
+                if document_type_id is not None:
+                    update_fields.append("document_type_id = ?")
+                    params.append(next_document_type_id if next_delivery_mode == 'resource_link' else None)
                 if delivery_count is not None:
                     update_fields.append("delivery_count = ?")
                     params.append(delivery_count)
@@ -3993,6 +4328,13 @@ class DBManager:
                 if description is not None:
                     update_fields.append("description = ?")
                     params.append(description)
+
+                if delivery_mode is not None and next_delivery_mode == 'card':
+                    update_fields.append("document_type_id = ?")
+                    params.append(None)
+                elif delivery_mode is not None and next_delivery_mode == 'resource_link':
+                    update_fields.append("card_id = ?")
+                    params.append(None)
 
                 if not update_fields:
                     return True  # 没有需要更新的字段
@@ -4035,33 +4377,48 @@ class DBManager:
             except Exception as e:
                 logger.error(f"更新发货次数失败: {e}")
 
-    def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None, spec_value: str = None):
+    def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None,
+                                             spec_value: str = None, user_id: int = None):
         """根据关键字和规格信息获取匹配的发货规则（支持多规格）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                user_filter = ""
+                user_params: List[Any] = []
+                if user_id is not None:
+                    user_filter = " AND dr.user_id = ?"
+                    user_params.append(user_id)
+                document_type_map = {}
+                if user_id is not None:
+                    document_type_map = {
+                        item['id']: item['name']
+                        for item in self.get_delivery_document_types(user_id)
+                    }
 
                 # 优先匹配：卡券名称+规格名称+规格值
                 if spec_name and spec_value:
-                    cursor.execute('''
+                    params = [keyword, keyword, spec_name, spec_value, *user_params, keyword]
+                    cursor.execute(f'''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times,
                            c.name as card_name, c.type as card_type, c.api_config,
                            c.text_content, c.data_content, c.enabled as card_enabled,
                            c.description as card_description, c.delay_seconds as card_delay_seconds,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.delivery_mode, dr.document_type_id, c.image_url
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.enabled = 1 AND c.enabled = 1
                     AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
                     AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
+                    {user_filter}
                     ORDER BY
                         CASE
                             WHEN ? LIKE '%' || dr.keyword || '%' THEN LENGTH(dr.keyword)
                             ELSE LENGTH(dr.keyword) / 2
                         END DESC,
                         dr.delivery_times ASC
-                    ''', (keyword, keyword, spec_name, spec_value, keyword))
+                    ''', tuple(params))
 
                     rules = []
                     for row in cursor.fetchall():
@@ -4093,7 +4450,11 @@ class DBManager:
                             'card_delay_seconds': row[14] or 0,
                             'is_multi_spec': bool(row[15]),
                             'spec_name': row[16],
-                            'spec_value': row[17]
+                            'spec_value': row[17],
+                            'delivery_mode': row[18] or 'card',
+                            'document_type_id': row[19],
+                            'document_type_name': document_type_map.get(row[19], '') if row[19] else '',
+                            'image_url': row[20],
                         })
 
                     if rules:
@@ -4101,25 +4462,35 @@ class DBManager:
                         return rules
 
                 # 兜底匹配：仅卡券名称
-                cursor.execute('''
+                params = [keyword, keyword, *user_params, keyword]
+                cursor.execute(f'''
                 SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.enabled as card_enabled,
                        c.description as card_description, c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
+                       c.is_multi_spec, c.spec_name, c.spec_value,
+                       dr.delivery_mode, dr.document_type_id, c.image_url
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
+                WHERE dr.enabled = 1
                 AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
-                AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
+                {user_filter}
+                AND (
+                    (COALESCE(dr.delivery_mode, 'card') = 'resource_link')
+                    OR (
+                        COALESCE(dr.delivery_mode, 'card') = 'card'
+                        AND c.enabled = 1
+                        AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
+                    )
+                )
                 ORDER BY
                     CASE
                         WHEN ? LIKE '%' || dr.keyword || '%' THEN LENGTH(dr.keyword)
                         ELSE LENGTH(dr.keyword) / 2
                     END DESC,
                     dr.delivery_times ASC
-                ''', (keyword, keyword, keyword))
+                ''', tuple(params))
 
                 rules = []
                 for row in cursor.fetchall():
@@ -4151,7 +4522,11 @@ class DBManager:
                         'card_delay_seconds': row[14] or 0,
                         'is_multi_spec': bool(row[15]) if row[15] is not None else False,
                         'spec_name': row[16],
-                        'spec_value': row[17]
+                        'spec_value': row[17],
+                        'delivery_mode': row[18] or 'card',
+                        'document_type_id': row[19],
+                        'document_type_name': document_type_map.get(row[19], '') if row[19] else '',
+                        'image_url': row[20],
                     })
 
                 if rules:
@@ -4951,6 +5326,68 @@ class DBManager:
                 logger.error(f"设置用户配置失败: {e}")
                 self.conn.rollback()
                 return False
+
+    def get_delivery_document_types(self, user_id: int) -> List[Dict[str, Any]]:
+        """获取用户配置的文档类型列表"""
+        setting = self.get_user_setting(user_id, 'delivery_document_types')
+        if not setting or not setting.get('value'):
+            return []
+
+        try:
+            raw_types = json.loads(setting['value'])
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"用户文档类型配置解析失败: user_id={user_id}")
+            return []
+
+        if not isinstance(raw_types, list):
+            return []
+
+        document_types = []
+        for item in raw_types:
+            if not isinstance(item, dict):
+                continue
+
+            document_type_id = str(item.get('id', '')).strip()
+            name = str(item.get('name', '')).strip()
+            url = str(item.get('url', '')).strip()
+            if not document_type_id or not name or not url:
+                continue
+
+            sort_order_raw = item.get('sort_order', 0)
+            try:
+                sort_order = int(sort_order_raw)
+            except (TypeError, ValueError):
+                sort_order = 0
+
+            document_types.append({
+                'id': document_type_id,
+                'name': name,
+                'url': url,
+                'enabled': bool(item.get('enabled', True)),
+                'description': str(item.get('description', '')).strip(),
+                'sort_order': sort_order,
+            })
+
+        document_types.sort(key=lambda item: (item.get('sort_order', 0), item.get('name', '')))
+        return document_types
+
+    def get_delivery_document_type_by_id(self, user_id: int, document_type_id: str) -> Optional[Dict[str, Any]]:
+        """按ID获取用户配置的文档类型"""
+        normalized_id = str(document_type_id or '').strip()
+        if not normalized_id:
+            return None
+
+        for document_type in self.get_delivery_document_types(user_id):
+            if document_type['id'] == normalized_id:
+                return document_type
+        return None
+
+    def get_default_delivery_document_type(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """获取默认文档类型：取启用且排序最靠前的一项"""
+        for document_type in self.get_delivery_document_types(user_id):
+            if document_type.get('enabled', True):
+                return document_type
+        return None
 
     # ==================== 管理员专用方法 ====================
 

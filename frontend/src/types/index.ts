@@ -137,18 +137,30 @@ export interface Card {
 export interface DeliveryRule {
   id: number
   keyword: string
-  card_id: number
+  card_id?: number | null
   delivery_count: number
   enabled: boolean
   description?: string
   delivery_times?: number
   card_name?: string
   card_type?: string
+  delivery_mode?: 'card' | 'resource_link'
+  document_type_id?: string
+  document_type_name?: string
   is_multi_spec?: boolean
   spec_name?: string
   spec_value?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface DeliveryDocumentType {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+  description?: string
+  sort_order?: number
 }
 
 // 通知渠道相关类型

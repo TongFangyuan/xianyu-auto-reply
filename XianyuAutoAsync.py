@@ -21,6 +21,7 @@ from config import (
 import sys
 import aiohttp
 from collections import defaultdict
+from urllib.parse import parse_qs, urlparse
 from db_manager import db_manager
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
@@ -1154,11 +1155,31 @@ class XianyuLive:
                     # 检查是否需要多数量发货
                     from db_manager import db_manager
                     quantity_to_send = 1  # 默认发送1个
+                    use_resource_link_delivery = False
+
+                    try:
+                        cookie_details = db_manager.get_cookie_details(self.cookie_id)
+                        user_id = cookie_details.get('user_id') if cookie_details else None
+                        if user_id:
+                            associated_resource_links = db_manager.get_resource_links_for_delivery_item(
+                                self.cookie_id,
+                                item_id,
+                                user_id
+                            )
+                            use_resource_link_delivery = bool(associated_resource_links)
+                    except Exception as association_error:
+                        logger.warning(
+                            f"检查商品关联卡密失败，继续按原规则发货: {self._safe_str(association_error)}"
+                        )
 
                     # 检查商品是否开启了多数量发货
                     multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(self.cookie_id, item_id)
 
-                    if multi_quantity_delivery and order_id:
+                    if use_resource_link_delivery:
+                        logger.info(
+                            f"商品 {item_id} 已关联卡密资源，将直接自动发货并忽略多数量循环"
+                        )
+                    elif multi_quantity_delivery and order_id:
                         logger.info(f"商品 {item_id} 开启了多数量发货，获取订单详情...")
                         try:
                             # 使用现有方法获取订单详情
@@ -4505,12 +4526,80 @@ class XianyuLive:
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
+    def _extract_baidu_pwd_from_url(self, resource_url: str) -> str:
+        """从百度网盘资源链接中提取提取码"""
+        try:
+            query = parse_qs(urlparse(resource_url or '').query)
+            pwd = (query.get('pwd') or [''])[0].strip()
+            if pwd:
+                return pwd
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】解析百度提取码失败: {self._safe_str(e)}")
+
+        match = re.search(r'(?:pwd|提取码)[：:=\s]*([A-Za-z0-9]+)', resource_url or '')
+        return match.group(1).strip() if match else ''
+
+    def _build_resource_link_delivery_content(self, resource_links: list, document_type: dict = None) -> str:
+        """根据商品关联卡密和文档类型拼接最终发货文案"""
+        if not resource_links:
+            return ''
+
+        normalized_links = sorted(
+            resource_links,
+            key=lambda item: {'baidu': 0, 'quark': 1}.get(item.get('drive_type'), 9)
+        )
+        resource_names = []
+        for link in normalized_links:
+            resource_name = str(link.get('resource_name') or '').strip()
+            if resource_name and resource_name not in resource_names:
+                resource_names.append(resource_name)
+
+        primary_resource_name = resource_names[0] if resource_names else '资源'
+        if len(resource_names) > 1:
+            logger.warning(f"【{self.cookie_id}】同一商品关联了多个资源名称，自动发货将使用首个名称: {resource_names}")
+
+        drive_labels = {
+            'baidu': '百度',
+            'quark': '夸克',
+        }
+        lines = [f"🔝「{primary_resource_name}」. 保存不失效更清晰"]
+
+        for link in normalized_links:
+            drive_type = link.get('drive_type')
+            drive_label = drive_labels.get(drive_type, drive_type or '网盘')
+            resource_url = str(link.get('resource_url') or '').strip()
+            if not resource_url:
+                continue
+
+            lines.append(f"{drive_label}链接: {resource_url}")
+            if drive_type == 'baidu':
+                pwd = self._extract_baidu_pwd_from_url(resource_url)
+                if pwd:
+                    lines.append(f"提取码: 「{pwd}」")
+
+        if document_type and document_type.get('url'):
+            document_name = str(document_type.get('name') or '').strip() or '资源'
+            if not document_name.endswith('文档'):
+                document_name = f"{document_name}文档"
+
+            document_prefix = document_name if document_name.startswith('全网') else f"全网{document_name}"
+            lines.append(
+                f"{document_prefix}复制去浏览qi打开 👇👇 【夸克链接失效这里找新的】{document_type['url']}"
+            )
+
+        return '\n'.join(lines)
+
     async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
             from db_manager import db_manager
 
             logger.info(f"开始自动发货检查: 商品ID={item_id}")
+            cookie_details = db_manager.get_cookie_details(self.cookie_id)
+            user_id = cookie_details.get('user_id') if cookie_details else None
+            if not user_id:
+                logger.warning(f"【{self.cookie_id}】未找到账号所属用户，跳过自动发货")
+                return None
 
             # 获取商品详细信息
             item_info = None
@@ -4572,7 +4661,33 @@ class XianyuLive:
             if not search_text:
                 search_text = item_id or "未知商品"
 
-            logger.info(f"使用搜索文本匹配发货规则: {search_text[:100]}...")
+            associated_resource_links = []
+            default_document_type = None
+            use_associated_resource_delivery = False
+
+            try:
+                associated_resource_links = db_manager.get_resource_links_for_delivery_item(
+                    self.cookie_id,
+                    item_id,
+                    user_id
+                )
+                use_associated_resource_delivery = bool(associated_resource_links)
+                if use_associated_resource_delivery:
+                    default_document_type = db_manager.get_default_delivery_document_type(user_id)
+                    document_type_name = (
+                        default_document_type.get('name')
+                        if default_document_type else '未配置文档类型'
+                    )
+                    logger.info(
+                        f"商品 {item_id} 已关联 {len(associated_resource_links)} 条卡密资源，"
+                        f"将直接自动发货，默认文档类型: {document_type_name}"
+                    )
+                else:
+                    logger.info(f"使用搜索文本匹配发货规则: {search_text[:100]}...")
+            except Exception as association_error:
+                logger.warning(
+                    f"检查商品关联卡密失败，将继续按发货规则处理: {self._safe_str(association_error)}"
+                )
 
             # 检查商品是否为多规格商品
             is_multi_spec = db_manager.get_item_multi_spec_status(self.cookie_id, item_id)
@@ -4580,7 +4695,7 @@ class XianyuLive:
             spec_value = None
 
             # 如果是多规格商品且有订单ID，获取规格信息
-            if is_multi_spec and order_id:
+            if not use_associated_resource_delivery and is_multi_spec and order_id:
                 logger.info(f"检测到多规格商品，获取订单规格信息: {order_id}")
                 try:
                     order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
@@ -4600,51 +4715,79 @@ class XianyuLive:
                     logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
                     return None
 
-            # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
-            delivery_rules = []
+            rule = None
+            if not use_associated_resource_delivery:
+                # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
+                delivery_rules = []
 
-            if is_multi_spec:
-                # 多规格商品：只匹配多规格发货规则
-                if spec_name and spec_value:
-                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
-                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
-                    # 过滤只保留多规格卡券
-                    delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
-                    
-                    if delivery_rules:
-                        logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+                if is_multi_spec:
+                    # 多规格商品：只匹配多规格发货规则
+                    if spec_name and spec_value:
+                        logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
+                        delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(
+                            search_text,
+                            spec_name,
+                            spec_value,
+                            user_id=user_id
+                        )
+                        # 精确规格卡券优先，资源卡密模式允许作为通用规则兜底
+                        delivery_rules = [
+                            r for r in delivery_rules
+                            if r.get('delivery_mode') == 'resource_link' or r.get('is_multi_spec')
+                        ]
+
+                        if delivery_rules:
+                            logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+                        else:
+                            logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
+                            return None
                     else:
-                        logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
+                        logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
                         return None
                 else:
-                    logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
+                    # 非多规格商品：只匹配非多规格商品发货规则
+                    logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
+                    delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=user_id)
+                    # 普通卡券和资源卡密模式都允许命中，多规格卡券继续过滤
+                    delivery_rules = [
+                        r for r in delivery_rules
+                        if r.get('delivery_mode') == 'resource_link' or not r.get('is_multi_spec')
+                    ]
+
+                    if delivery_rules:
+                        logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
+                    else:
+                        logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
+                        return None
+
+                # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
+                if len(delivery_rules) > 1:
+                    rule_names = [
+                        (
+                            f"{r['card_name']}({r.get('spec_name', '')}:{r.get('spec_value', '')})"
+                            if r.get('is_multi_spec')
+                            else (r.get('card_name') or r.get('document_type_name') or '资源卡密')
+                        )
+                        for r in delivery_rules
+                    ]
+                    logger.warning(f"❌ 匹配到多个发货规则({len(delivery_rules)}个)，无法确定使用哪个，跳过自动发货: {', '.join(rule_names)}")
                     return None
+
+                if not delivery_rules:
+                    logger.warning(f"未找到匹配的发货规则: {search_text[:50]}...")
+                    return None
+
+                # 使用唯一匹配的规则
+                rule = delivery_rules[0]
+                logger.info(
+                    f"✅ 唯一匹配发货规则: {rule['keyword']} -> "
+                    f"{rule.get('card_name') or rule.get('document_type_name') or '资源卡密'} "
+                    f"({rule.get('delivery_mode') or rule.get('card_type')})"
+                )
             else:
-                # 非多规格商品：只匹配非多规格发货规则
-                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
-                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
-                # 过滤只保留非多规格卡券
-                delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
-                
-                if delivery_rules:
-                    logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
-                else:
-                    logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
-                    return None
-
-            # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
-            if len(delivery_rules) > 1:
-                rule_names = [f"{r['card_name']}({r.get('spec_name', '')}:{r.get('spec_value', '')})" if r.get('is_multi_spec') else r['card_name'] for r in delivery_rules]
-                logger.warning(f"❌ 匹配到多个发货规则({len(delivery_rules)}个)，无法确定使用哪个，跳过自动发货: {', '.join(rule_names)}")
-                return None
-
-            if not delivery_rules:
-                logger.warning(f"未找到匹配的发货规则: {search_text[:50]}...")
-                return None
-
-            # 使用唯一匹配的规则
-            rule = delivery_rules[0]
-            logger.info(f"✅ 唯一匹配发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                logger.info(
+                    f"✅ 商品 {item_id} 命中商品关联卡密自动发货，无需额外发货规则"
+                )
 
             # 保存商品信息到数据库（需要有商品标题才保存）
             # 尝试获取商品标题
@@ -4664,7 +4807,17 @@ class XianyuLive:
                 logger.warning(f"跳过保存商品信息：缺少商品标题 - {item_id}")
 
             # 详细的匹配结果日志
-            if rule.get('is_multi_spec'):
+            if use_associated_resource_delivery:
+                resource_names = [
+                    str(link.get('resource_name') or '').strip()
+                    for link in associated_resource_links
+                    if str(link.get('resource_name') or '').strip()
+                ]
+                logger.info(
+                    f"✅ 使用商品关联卡密自动发货: "
+                    f"{' / '.join(resource_names) if resource_names else '未命名资源'}"
+                )
+            elif rule.get('is_multi_spec'):
                 if spec_name and spec_value:
                     logger.info(f"🎯 精确匹配多规格发货规则: {rule['keyword']} -> {rule['card_name']} [{rule['spec_name']}:{rule['spec_value']}]")
                     logger.info(f"📋 订单规格: {spec_name}:{spec_value} ✅ 匹配卡券规格: {rule['spec_name']}:{rule['spec_value']}")
@@ -4672,13 +4825,23 @@ class XianyuLive:
                     logger.info(f"⚠️ 使用多规格发货规则但无订单规格信息: {rule['keyword']} -> {rule['card_name']} [{rule['spec_name']}:{rule['spec_value']}]")
             else:
                 if spec_name and spec_value:
-                    logger.info(f"🔄 兜底匹配普通发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                    logger.info(
+                        f"🔄 兜底匹配普通发货规则: {rule['keyword']} -> "
+                        f"{rule.get('card_name') or rule.get('document_type_name') or '资源卡密'} "
+                        f"({rule.get('delivery_mode') or rule.get('card_type')})"
+                    )
                     logger.info(f"📋 订单规格: {spec_name}:{spec_value} ➡️ 使用普通卡券兜底")
                 else:
-                    logger.info(f"✅ 匹配普通发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                    logger.info(
+                        f"✅ 匹配普通发货规则: {rule['keyword']} -> "
+                        f"{rule.get('card_name') or rule.get('document_type_name') or '资源卡密'} "
+                        f"({rule.get('delivery_mode') or rule.get('card_type')})"
+                    )
 
-            # 获取延时设置
-            delay_seconds = rule.get('card_delay_seconds', 0)
+            # 获取延时设置，商品关联卡密和资源卡密模式默认不额外延时
+            delay_seconds = 0
+            if rule and rule.get('delivery_mode') != 'resource_link':
+                delay_seconds = rule.get('card_delay_seconds', 0)
 
             # 执行延时（不管是否确认发货，只要有延时设置就执行）
             if delay_seconds and delay_seconds > 0:
@@ -4750,12 +4913,61 @@ class XianyuLive:
                     logger.error(f"保存基本订单信息失败: {self._safe_str(db_e)}")
 
                 # 开始处理发货内容
-                logger.info(f"开始处理发货内容，规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                if use_associated_resource_delivery:
+                    logger.info(
+                        f"开始处理发货内容，方式: 商品关联卡密自动发货 -> 商品 {item_id}"
+                    )
+                else:
+                    logger.info(
+                        f"开始处理发货内容，规则: {rule['keyword']} -> "
+                        f"{rule.get('card_name') or rule.get('document_type_name') or '资源卡密'} "
+                        f"({rule.get('delivery_mode') or rule.get('card_type')})"
+                    )
 
                 delivery_content = None
 
+                if use_associated_resource_delivery:
+                    if not associated_resource_links:
+                        logger.warning(f"商品 {item_id} 未关联可发货的卡密资源，跳过自动发货")
+                        return None
+
+                    if not default_document_type:
+                        logger.warning(
+                            f"用户 {user_id} 未配置可用文档类型，商品关联卡密将只发送资源链接"
+                        )
+
+                    delivery_content = self._build_resource_link_delivery_content(
+                        associated_resource_links,
+                        default_document_type
+                    )
+                elif rule.get('delivery_mode') == 'resource_link':
+                    legacy_resource_links = db_manager.get_resource_links_for_delivery_item(
+                        self.cookie_id,
+                        item_id,
+                        user_id
+                    )
+                    if not legacy_resource_links:
+                        logger.warning(f"商品 {item_id} 未关联可发货的卡密资源，跳过自动发货")
+                        return None
+
+                    document_type = None
+                    if rule.get('document_type_id'):
+                        document_type = db_manager.get_delivery_document_type_by_id(
+                            user_id,
+                            rule['document_type_id']
+                        )
+                        if not document_type or not document_type.get('enabled', True):
+                            logger.warning(
+                                f"规则 {rule['id']} 关联的文档类型不存在或已停用: {rule.get('document_type_id')}"
+                            )
+                            return None
+
+                    delivery_content = self._build_resource_link_delivery_content(
+                        legacy_resource_links,
+                        document_type
+                    )
                 # 根据卡券类型处理发货内容
-                if rule['card_type'] == 'api':
+                elif rule['card_type'] == 'api':
                     # API类型：调用API获取内容，传入订单和商品信息用于动态参数替换
                     delivery_content = await self._get_api_card_content(rule, order_id, item_id, send_user_id, spec_name, spec_value)
 
@@ -4779,18 +4991,30 @@ class XianyuLive:
 
                 if delivery_content:
                     # 处理备注信息和变量替换
-                    final_content = self._process_delivery_content_with_description(delivery_content, rule.get('card_description', ''))
+                    final_content = self._process_delivery_content_with_description(
+                        delivery_content,
+                        rule.get('card_description', '') if rule else ''
+                    )
 
                     # 增加发货次数统计
-                    db_manager.increment_delivery_times(rule['id'])
-                    logger.info(f"自动发货成功: 规则ID={rule['id']}, 内容长度={len(final_content)}")
+                    if rule and rule.get('id'):
+                        db_manager.increment_delivery_times(rule['id'])
+                        logger.info(f"自动发货成功: 规则ID={rule['id']}, 内容长度={len(final_content)}")
+                    else:
+                        logger.info(f"自动发货成功: 商品关联卡密自动发货, 内容长度={len(final_content)}")
                     return final_content
                 else:
-                    logger.warning(f"获取发货内容失败: 规则ID={rule['id']}")
+                    if rule and rule.get('id'):
+                        logger.warning(f"获取发货内容失败: 规则ID={rule['id']}")
+                    else:
+                        logger.warning(f"获取商品关联卡密发货内容失败: 商品ID={item_id}")
                     return None
             else:
                 # 没有订单ID，记录日志但不处理发货内容
-                logger.info(f"⚠️ 未检测到订单ID，跳过发货内容处理。规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                if use_associated_resource_delivery:
+                    logger.info(f"⚠️ 未检测到订单ID，跳过发货内容处理。方式: 商品关联卡密自动发货")
+                else:
+                    logger.info(f"⚠️ 未检测到订单ID，跳过发货内容处理。规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
                 return None
 
         except Exception as e:

@@ -3,7 +3,8 @@ import request, { get, post, put, del } from '@/utils/request'
 export interface ResourceLinkData {
   id?: number
   resource_name: string
-  drive_type: 'quark' | 'baidu'
+  resource_type: string
+  drive_type: string
   resource_url: string
   association_count?: number
   associated_items?: ResourceLinkAssociatedItemPreview[]
@@ -21,7 +22,9 @@ export interface ResourceLinkAssociatedItemPreview {
 export interface ResourceLinkImportDuplicate {
   id: number
   resource_name: string
-  drive_type: 'quark' | 'baidu'
+  resource_type?: string
+  new_resource_type?: string
+  drive_type: string
   drive_type_label: string
   existing_url: string
   new_url: string
@@ -74,6 +77,7 @@ export interface ResourceLinkAssociationUpdateResponse {
 export const getResourceLinks = async (params?: {
   keyword?: string
   drive_type?: string
+  resource_type?: string
 }): Promise<{ success: boolean; data?: ResourceLinkData[] }> => {
   const result = await get<ResourceLinkData[]>('/resource-links', { params })
   return { success: true, data: result }
@@ -98,6 +102,7 @@ export const deleteResourceLink = (linkId: string): Promise<{ message: string }>
 
 export const importResourceLinks = (data: {
   resource_name: string
+  resource_type: string
   content: string
   confirm_update?: boolean
 }): Promise<ResourceLinkImportResponse> => {
@@ -112,6 +117,13 @@ export const importResourceLinksCsv = (formData: FormData): Promise<ResourceLink
 
 export const downloadResourceLinksTemplate = async (): Promise<Blob> => {
   const response = await request.get('/resource-links/template', {
+    responseType: 'blob',
+  })
+  return response.data
+}
+
+export const exportResourceLinksDocument = async (): Promise<Blob> => {
+  const response = await request.get('/resource-links/export-document', {
     responseType: 'blob',
   })
   return response.data
