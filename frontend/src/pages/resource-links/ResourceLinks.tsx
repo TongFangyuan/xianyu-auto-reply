@@ -19,6 +19,7 @@ import {
   type ResourceLinkImportDuplicate,
   type ResourceLinkImportError,
 } from '@/api/resourceLinks'
+import { getUserSetting } from '@/api/settings'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { useAuthStore } from '@/store/authStore'
@@ -46,11 +47,33 @@ const associationStatusOptions = [
   { value: 'unlinked', label: '仅看未关联商品' },
 ]
 
+const exportModeOptions = [
+  { value: 'all', label: '导出全部资源' },
+  { value: 'updated', label: '仅导出更新内容' },
+]
+
+const exportUpdatedPresetOptions = [
+  { value: 'since_last', label: '自上次导出后更新' },
+  { value: 'today', label: '今天更新' },
+  { value: '3d', label: '最近3天更新' },
+  { value: '7d', label: '最近7天更新' },
+  { value: 'custom', label: '自定义时间' },
+]
+
 const initialFormData = {
   resource_name: '',
   resource_type: '',
   drive_type: '',
   resource_url: '',
+}
+
+const formatDateTimeLocal = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}`
 }
 
 function SuggestionInput({
@@ -213,6 +236,16 @@ export function ResourceLinks() {
   const [csvInputKey, setCsvInputKey] = useState(0)
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const [exportingDocument, setExportingDocument] = useState(false)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [exportMode, setExportMode] = useState<'all' | 'updated'>('all')
+  const [exportUpdatedPreset, setExportUpdatedPreset] = useState('today')
+  const [exportCustomSince, setExportCustomSince] = useState(() => {
+    const date = new Date()
+    date.setHours(0, 0, 0, 0)
+    return formatDateTimeLocal(date)
+  })
+  const [lastExportAt, setLastExportAt] = useState<string>('')
+  const [loadingLastExportAt, setLoadingLastExportAt] = useState(false)
   const [associationModalOpen, setAssociationModalOpen] = useState(false)
   const [associationLoading, setAssociationLoading] = useState(false)
   const [associationSaving, setAssociationSaving] = useState(false)
@@ -313,6 +346,31 @@ export function ResourceLinks() {
     setCsvInputKey(prev => prev + 1)
   }
 
+  const openExportModal = async () => {
+    const date = new Date()
+    date.setHours(0, 0, 0, 0)
+    setExportMode('all')
+    setExportUpdatedPreset('today')
+    setExportCustomSince(formatDateTimeLocal(date))
+    setLastExportAt('')
+    setExportModalOpen(true)
+    setLoadingLastExportAt(true)
+
+    try {
+      const result = await getUserSetting('resource_links_last_exported_at')
+      setLastExportAt(result.success ? (result.value || '') : '')
+    } catch {
+      setLastExportAt('')
+    } finally {
+      setLoadingLastExportAt(false)
+    }
+  }
+
+  const closeExportModal = () => {
+    setExportModalOpen(false)
+    setExportingDocument(false)
+  }
+
   const handleDelete = async (link: ResourceLinkData) => {
     const associationCount = link.association_count || 0
     const message = associationCount > 0
@@ -368,7 +426,34 @@ export function ResourceLinks() {
   const handleExportDocument = async () => {
     try {
       setExportingDocument(true)
-      const blob = await exportResourceLinksDocument()
+      let updatedAfter: string | undefined
+      if (exportMode === 'updated') {
+        if (exportUpdatedPreset === 'since_last') {
+          updatedAfter = undefined
+        } else if (exportUpdatedPreset === 'custom') {
+          if (!exportCustomSince) {
+            addToast({ type: 'warning', message: '请选择自定义更新时间' })
+            return
+          }
+          updatedAfter = exportCustomSince
+        } else {
+          const date = new Date()
+          if (exportUpdatedPreset === 'today') {
+            date.setHours(0, 0, 0, 0)
+          } else if (exportUpdatedPreset === '3d') {
+            date.setDate(date.getDate() - 3)
+          } else {
+            date.setDate(date.getDate() - 7)
+          }
+          updatedAfter = formatDateTimeLocal(date)
+        }
+      }
+
+      const blob = await exportResourceLinksDocument({
+        export_mode: exportMode,
+        updated_after: updatedAfter,
+        updated_preset: exportMode === 'updated' ? exportUpdatedPreset : undefined,
+      })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -377,7 +462,8 @@ export function ResourceLinks() {
       link.click()
       document.body.removeChild(link)
       window.URL.revokeObjectURL(url)
-      addToast({ type: 'success', message: '资源文档已开始下载' })
+      addToast({ type: 'success', message: exportMode === 'updated' ? '更新文档已开始下载' : '资源文档已开始下载' })
+      closeExportModal()
     } catch (error) {
       addToast({ type: 'error', message: getErrorMessage(error, '导出文档失败') })
     } finally {
@@ -594,6 +680,18 @@ export function ResourceLinks() {
   const replacedAssociationCount = selectedAssociationItem?.association_status === 'other' ? 1 : 0
   const removedAssociationCount = currentAssociationItem && currentAssociationItem.id !== selectedAssociationItemId ? 1 : 0
   const hasAssociationChanges = addedAssociationCount > 0 || replacedAssociationCount > 0 || removedAssociationCount > 0
+  const exportUpdatedPresetLabel = exportUpdatedPresetOptions.find((option) => option.value === exportUpdatedPreset)?.label || '今天更新'
+  const exportUpdatedSummary = exportUpdatedPreset === 'since_last'
+    ? (
+      loadingLastExportAt
+        ? '正在读取上次导出时间...'
+        : lastExportAt
+          ? `导出 ${lastExportAt} 之后更新的资源`
+          : '尚无上次导出记录，首次使用时会导出全部资源并记录本次导出时间'
+    )
+    : exportUpdatedPreset === 'custom'
+      ? (exportCustomSince ? `${exportCustomSince.replace('T', ' ')} 之后更新的资源` : '请选择自定义更新时间')
+      : `${exportUpdatedPresetLabel}的资源`
 
   const handleSaveAssociations = async () => {
     if (!associationResource?.id) return
@@ -633,7 +731,7 @@ export function ResourceLinks() {
           <p className="page-description">保存资源名称、资源类型、网盘类型和网盘链接，支持分享口令导入、CSV 批量导入和一键导出文档</p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button onClick={handleExportDocument} disabled={exportingDocument} className="btn-ios-secondary">
+          <button onClick={openExportModal} disabled={exportingDocument} className="btn-ios-secondary">
             {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             导出文档
           </button>
@@ -883,6 +981,99 @@ export function ResourceLinks() {
           </div>
         </div>
       </motion.div>
+
+      {exportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">导出文档</h3>
+                <p className="text-sm text-slate-500 mt-1">支持导出全部资源，或仅导出某个时间点之后更新过的资源。</p>
+              </div>
+              <button onClick={closeExportModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="space-y-3">
+                <label className="input-label">导出范围</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {exportModeOptions.map((option) => {
+                    const selected = exportMode === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setExportMode(option.value as 'all' | 'updated')}
+                        className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
+                          selected
+                            ? 'border-blue-500 bg-blue-50 text-blue-600'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
+                        }`}
+                      >
+                        <div className="text-base font-medium">{option.label}</div>
+                        <div className="mt-1 text-sm text-slate-500">
+                          {option.value === 'all' ? '导出当前账号下全部卡密资源文档' : '仅导出指定时间之后有更新的资源'}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {exportMode === 'updated' && (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div>
+                    <label className="input-label mb-1">更新时间范围</label>
+                    <Select
+                      value={exportUpdatedPreset}
+                      onChange={setExportUpdatedPreset}
+                      options={exportUpdatedPresetOptions}
+                      placeholder="请选择更新时间范围"
+                    />
+                  </div>
+
+                  {exportUpdatedPreset === 'custom' && (
+                    <div>
+                      <label className="input-label mb-1">自定义起点</label>
+                      <input
+                        type="datetime-local"
+                        value={exportCustomSince}
+                        onChange={(e) => setExportCustomSince(e.target.value)}
+                        className="input-ios"
+                      />
+                    </div>
+                  )}
+
+                  <div className="rounded-xl bg-white border border-slate-200 px-4 py-3 text-sm text-slate-600">
+                    <p>本次将导出：{exportUpdatedSummary}</p>
+                    <p className="mt-1 text-slate-500">如果同一资源名称下只有部分网盘链接被更新，导出时会自动补齐该资源的完整链接。</p>
+                    {exportUpdatedPreset === 'since_last' && (
+                      <p className="mt-1 text-slate-500">成功导出后，系统会自动把本次导出时间记为新的基线。</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={closeExportModal} className="btn-ios-secondary">
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportDocument}
+                  disabled={exportingDocument || (exportMode === 'updated' && exportUpdatedPreset === 'since_last' && loadingLastExportAt)}
+                  className="btn-ios-primary min-w-[132px]"
+                >
+                  {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  开始导出
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

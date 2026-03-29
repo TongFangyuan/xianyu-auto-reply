@@ -122,9 +122,14 @@ export const downloadResourceLinksTemplate = async (): Promise<Blob> => {
   return response.data
 }
 
-export const exportResourceLinksDocument = async (): Promise<Blob> => {
+export const exportResourceLinksDocument = async (params?: {
+  export_mode?: 'all' | 'updated'
+  updated_after?: string
+  updated_preset?: string
+}): Promise<Blob> => {
   const response = await request.get('/resource-links/export-document', {
     responseType: 'blob',
+    params,
   })
   return response.data
 }

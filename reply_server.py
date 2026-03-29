@@ -433,9 +433,39 @@ def execute_resource_link_import(items: List[Dict[str, str]], user_id: int) -> D
     }
 
 
-def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -> str:
+def parse_resource_export_datetime(value: str) -> datetime:
+    normalized_value = str(value or '').strip()
+    if not normalized_value:
+        raise ValueError("更新时间不能为空")
+
+    normalized_value = normalized_value.replace('T', ' ')
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+        try:
+            return datetime.strptime(normalized_value, fmt)
+        except ValueError:
+            continue
+
+    try:
+        parsed_value = datetime.fromisoformat(normalized_value)
+        return parsed_value.replace(tzinfo=None) if parsed_value.tzinfo else parsed_value
+    except ValueError as exc:
+        raise ValueError("更新时间格式不正确") from exc
+
+
+def get_resource_link_export_updated_at(link: Dict[str, Any]) -> Optional[datetime]:
+    raw_value = str(link.get('updated_at') or link.get('created_at') or '').strip()
+    if not raw_value:
+        return None
+
+    try:
+        return parse_resource_export_datetime(raw_value)
+    except ValueError:
+        return None
+
+
+def build_resource_links_export_document(resource_links: List[Dict[str, Any]], empty_message: str = "当前暂无卡密资源") -> str:
     if not resource_links:
-        return "> 当前暂无卡密资源\n"
+        return f"> {empty_message}\n"
 
     drive_order = {
         'baidu': 0,
@@ -451,6 +481,7 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -
             'resource_type': '',
             'links': [],
             'latest_updated_at': '',
+            'latest_updated_at_dt': None,
         })
 
         resource_type = str(link.get('resource_type') or '').strip()
@@ -458,8 +489,14 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -
             resource_group['resource_type'] = resource_type
 
         latest_updated_at = str(link.get('updated_at') or link.get('created_at') or '').strip()
+        link_updated_at_dt = get_resource_link_export_updated_at(link)
         if latest_updated_at and latest_updated_at > resource_group['latest_updated_at']:
             resource_group['latest_updated_at'] = latest_updated_at
+        if link_updated_at_dt and (
+            resource_group['latest_updated_at_dt'] is None
+            or link_updated_at_dt > resource_group['latest_updated_at_dt']
+        ):
+            resource_group['latest_updated_at_dt'] = link_updated_at_dt
 
         resource_group['links'].append({
             'drive_type': str(link.get('drive_type') or '').strip(),
@@ -485,31 +522,52 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]]) -
             return (0, type_order[resource_type], resource_type)
         return (1, 999, resource_type)
 
+    def append_resource_group(target_lines: List[str], resource_group: Dict[str, Any]):
+        target_lines.append(f"#### {resource_group['resource_name']}")
+        for link in resource_group['links']:
+            drive_type = link['drive_type']
+            drive_label = get_resource_drive_label(drive_type) or '网盘'
+            resource_url = link['resource_url']
+            if not resource_url:
+                continue
+
+            target_lines.append(f"- {drive_label}链接: {resource_url}")
+            if drive_type == 'baidu':
+                pwd = extract_baidu_pwd_from_url(resource_url)
+                if pwd:
+                    target_lines.append(f"- 提取码: `{pwd}`")
+
+    def sort_resource_groups(resource_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        sorted_groups = sorted(resource_groups, key=lambda item: item['resource_name'])
+        sorted_groups.sort(
+            key=lambda item: item.get('latest_updated_at_dt') or datetime.min,
+            reverse=True
+        )
+        return sorted_groups
+
     lines: List[str] = []
     sorted_types = sorted(grouped_by_type.keys(), key=section_sort_key)
+    today = datetime.now().date()
+    today_hot_resources = sort_resource_groups([
+        resource_group for resource_group in grouped_by_name.values()
+        if resource_group.get('latest_updated_at_dt') and resource_group['latest_updated_at_dt'].date() == today
+    ])
+
+    if today_hot_resources:
+        lines.append(f"### {today.year}.{today.month}.{today.day}（热门更新）")
+        for resource_index, resource_group in enumerate(today_hot_resources):
+            lines.append('')
+            append_resource_group(lines, resource_group)
 
     for type_index, resource_type in enumerate(sorted_types):
-        if type_index > 0:
+        if lines:
             lines.append('')
         lines.append(f"### ----------{resource_type}---------")
 
-        resources = sorted(grouped_by_type[resource_type], key=lambda item: item['resource_name'])
-        resources.sort(key=lambda item: item.get('latest_updated_at', ''), reverse=True)
+        resources = sort_resource_groups(grouped_by_type[resource_type])
         for resource_index, resource_group in enumerate(resources):
             lines.append('')
-            lines.append(f"#### {resource_group['resource_name']}")
-            for link in resource_group['links']:
-                drive_type = link['drive_type']
-                drive_label = get_resource_drive_label(drive_type) or '网盘'
-                resource_url = link['resource_url']
-                if not resource_url:
-                    continue
-
-                lines.append(f"- {drive_label}链接: {resource_url}")
-                if drive_type == 'baidu':
-                    pwd = extract_baidu_pwd_from_url(resource_url)
-                    if pwd:
-                        lines.append(f"- 提取码: `{pwd}`")
+            append_resource_group(lines, resource_group)
 
     return '\n'.join(lines).strip() + '\n'
 
@@ -4856,13 +4914,67 @@ def download_resource_links_template(current_user: Dict[str, Any] = Depends(get_
 
 
 @app.get("/resource-links/export-document")
-def export_resource_links_document(current_user: Dict[str, Any] = Depends(get_current_user)):
+def export_resource_links_document(
+    export_mode: str = 'all',
+    updated_preset: Optional[str] = None,
+    updated_after: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
     """导出卡密资源文档"""
     try:
+        normalized_export_mode = str(export_mode or 'all').strip().lower()
+        if normalized_export_mode not in ('all', 'updated'):
+            raise HTTPException(status_code=400, detail="导出模式不正确")
+
         resource_links = db_manager.list_resource_links(current_user['user_id'])
-        document_content = build_resource_links_export_document(resource_links)
-        filename = f"resource_links_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        export_links = resource_links
+        empty_message = "当前暂无卡密资源"
+        filename_prefix = "resource_links_document"
+
+        if normalized_export_mode == 'updated':
+            normalized_updated_preset = str(updated_preset or '').strip().lower()
+            if normalized_updated_preset == 'since_last':
+                last_export_setting = db_manager.get_user_setting(
+                    current_user['user_id'],
+                    'resource_links_last_exported_at'
+                )
+                last_export_value = (last_export_setting or {}).get('value', '').strip()
+                updated_after_dt = parse_resource_export_datetime(last_export_value) if last_export_value else None
+                filename_prefix = "resource_links_since_last_export_document"
+            else:
+                if not updated_after:
+                    raise HTTPException(status_code=400, detail="请选择更新起点")
+                updated_after_dt = parse_resource_export_datetime(updated_after)
+
+            updated_resource_names = {
+                str(link.get('resource_name') or '').strip()
+                for link in resource_links
+                if (
+                    str(link.get('resource_name') or '').strip()
+                    and (link_updated_at := get_resource_link_export_updated_at(link))
+                    and (updated_after_dt is None or link_updated_at >= updated_after_dt)
+                )
+            }
+            export_links = [
+                link for link in resource_links
+                if str(link.get('resource_name') or '').strip() in updated_resource_names
+            ]
+            empty_message = "当前没有符合导出条件的已更新资源"
+            if normalized_updated_preset != 'since_last':
+                filename_prefix = "resource_links_updated_document"
+
+        document_content = build_resource_links_export_document(export_links, empty_message=empty_message)
+        filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         encoded_filename = quote(filename.encode('utf-8'))
+        export_finished_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        if normalized_export_mode == 'updated' and str(updated_preset or '').strip().lower() == 'since_last':
+            db_manager.set_user_setting(
+                current_user['user_id'],
+                'resource_links_last_exported_at',
+                export_finished_at,
+                '卡密资源文档上次导出时间'
+            )
 
         return StreamingResponse(
             io.BytesIO(document_content.encode('utf-8-sig')),
@@ -4871,6 +4983,10 @@ def export_resource_links_document(current_user: Dict[str, Any] = Depends(get_cu
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
             }
         )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         log_with_user('error', f"导出卡密资源文档失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
