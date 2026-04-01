@@ -352,6 +352,9 @@ def validate_resource_metadata_payload(payload: Dict[str, Any]) -> Dict[str, Any
             raise ValueError("日更资源请填写每天更新几集")
         update_weekdays = []
         interval_days = 0
+    elif update_mode == 'weekly':
+        daily_episode_count = 0
+        interval_days = 0
     elif update_mode == 'interval':
         if interval_days <= 0:
             raise ValueError("固定几天更新资源请填写更新间隔")

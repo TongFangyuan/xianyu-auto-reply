@@ -51,12 +51,31 @@ export interface ResourceAssociationUpdateResponse {
   total_selected: number
 }
 
+const normalizeUpdateWeekdays = (value: unknown): number[] => {
+  const candidates = Array.isArray(value)
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? value.split(/[，,\s/]+/)
+      : []
+
+  const normalized = candidates
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item >= 1 && item <= 7)
+
+  return Array.from(new Set(normalized))
+}
+
+const normalizeResource = (resource: ResourceData): ResourceData => ({
+  ...resource,
+  update_weekdays: normalizeUpdateWeekdays(resource.update_weekdays),
+})
+
 export const getResources = async (params?: {
   keyword?: string
   resource_type?: string
 }): Promise<{ success: boolean; data?: ResourceData[] }> => {
   const result = await get<ResourceData[]>('/resources', { params })
-  return { success: true, data: result }
+  return { success: true, data: (result || []).map(normalizeResource) }
 }
 
 export const createResource = (
@@ -77,7 +96,11 @@ export const deleteResource = (resourceId: string): Promise<{ message: string }>
 }
 
 export const getResourceItemAssociations = (resourceId: string): Promise<ResourceAssociationResponse> => {
-  return get(`/resources/${resourceId}/item-associations`)
+  return get<ResourceAssociationResponse>(`/resources/${resourceId}/item-associations`)
+    .then((result) => ({
+      ...result,
+      resource: normalizeResource(result.resource),
+    }))
 }
 
 export const updateResourceItemAssociations = (

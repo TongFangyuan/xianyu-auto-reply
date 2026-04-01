@@ -152,7 +152,9 @@ const mapResourceToFormData = (resource: ResourceData): ResourceFormData => ({
   resource_type: resource.resource_type || '',
   recommend_level: String(resource.recommend_level ?? 0),
   update_mode: (resource.update_mode || '') as ResourceUpdateMode,
-  update_weekdays: [...(resource.update_weekdays || [])],
+  update_weekdays: (resource.update_weekdays || [])
+    .map((weekday) => Number(weekday))
+    .filter((weekday) => Number.isInteger(weekday) && weekday >= 1 && weekday <= 7),
   daily_episode_count: resource.daily_episode_count ? String(resource.daily_episode_count) : '',
   interval_days: resource.interval_days ? String(resource.interval_days) : '',
   latest_episode: resource.latest_episode ? String(resource.latest_episode) : '',
