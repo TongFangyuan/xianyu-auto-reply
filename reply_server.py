@@ -127,15 +127,31 @@ RESOURCE_TYPE_OPTIONS = [
     '综艺',
 ]
 
+RESOURCE_UPDATE_MODE_LABELS = {
+    'daily': '日更',
+    'weekly': '周更',
+    'interval': '固定几天更新',
+}
+
+RESOURCE_WEEKDAY_LABELS = {
+    1: '周一',
+    2: '周二',
+    3: '周三',
+    4: '周四',
+    5: '周五',
+    6: '周六',
+    7: '周日',
+}
+
 RESOURCE_URL_PATTERNS = {
     'quark': re.compile(r'https?://pan\.quark\.cn/s/[^\s]+', re.IGNORECASE),
     'baidu': re.compile(r'https?://pan\.baidu\.com/s/[^\s]+', re.IGNORECASE),
 }
 
 RESOURCE_LINK_TEMPLATE_ROWS = [
-    ['资源名称', '资源类型', '网盘类型', '资源链接'],
-    ['真相捕捉3', '电视剧', '百度', 'https://pan.baidu.com/s/1KUgCHi2wK3_agNHRKW4DJw?pwd=1234'],
-    ['沃d.上虞', '动漫', '夸克', 'https://pan.quark.cn/s/852995adca1e'],
+    ['资源名称', '网盘类型', '资源链接'],
+    ['真相捕捉3', '百度', 'https://pan.baidu.com/s/1KUgCHi2wK3_agNHRKW4DJw?pwd=1234'],
+    ['沃d.上虞', '夸克', 'https://pan.quark.cn/s/852995adca1e'],
 ]
 
 
@@ -165,6 +181,109 @@ def normalize_resource_drive_type(drive_type: str) -> str:
 
 def normalize_resource_type(resource_type: str) -> str:
     return normalize_resource_text_field(resource_type, "资源类型")
+
+
+def normalize_resource_recommend_level(value: Any) -> int:
+    normalized = str(value or '').strip()
+    if not normalized:
+        return 0
+    try:
+        recommend_level = int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("推荐星级必须是 0 到 5 之间的整数") from exc
+
+    if recommend_level < 0 or recommend_level > 5:
+        raise ValueError("推荐星级必须是 0 到 5 之间的整数")
+    return recommend_level
+
+
+def normalize_resource_update_mode(value: Any) -> str:
+    normalized = str(value or '').strip().lower()
+    mapping = {
+        '': '',
+        'none': '',
+        'manual': '',
+        '不固定': '',
+        'daily': 'daily',
+        '日更': 'daily',
+        'weekly': 'weekly',
+        '周更': 'weekly',
+        'interval': 'interval',
+        '固定几天更新': 'interval',
+        '每隔几天更新': 'interval',
+        '隔日更新': 'interval',
+    }
+    if normalized not in mapping:
+        raise ValueError("更新频率不正确")
+    return mapping[normalized]
+
+
+def normalize_resource_positive_int(value: Any, field_name: str, allow_zero: bool = True) -> int:
+    normalized = str(value or '').strip()
+    if not normalized:
+        return 0
+    try:
+        number = int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name}必须是整数") from exc
+
+    if number < 0 or (not allow_zero and number <= 0):
+        raise ValueError(f"{field_name}必须大于{'等于' if allow_zero else ''}0")
+    return number
+
+
+def normalize_resource_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or '').strip().lower()
+    if normalized in ('', '0', 'false', 'no', '否', '未完结'):
+        return False
+    if normalized in ('1', 'true', 'yes', '是', '已完结', '完结'):
+        return True
+    raise ValueError("是否完结字段不正确")
+
+
+def normalize_resource_update_weekdays(value: Any) -> List[int]:
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        candidates = value
+    else:
+        normalized = str(value).strip()
+        if not normalized:
+            return []
+        try:
+            parsed = json.loads(normalized)
+            candidates = parsed if isinstance(parsed, list) else [normalized]
+        except json.JSONDecodeError:
+            candidates = re.split(r'[，,\s/]+', normalized)
+
+    mapping = {
+        '1': 1, '周一': 1, '星期一': 1, '周1': 1,
+        '2': 2, '周二': 2, '星期二': 2, '周2': 2,
+        '3': 3, '周三': 3, '星期三': 3, '周3': 3,
+        '4': 4, '周四': 4, '星期四': 4, '周4': 4,
+        '5': 5, '周五': 5, '星期五': 5, '周5': 5,
+        '6': 6, '周六': 6, '星期六': 6, '周6': 6,
+        '7': 7, '周日': 7, '星期日': 7, '星期天': 7, '周天': 7, '周7': 7,
+    }
+
+    normalized_values: List[int] = []
+    for candidate in candidates:
+        candidate_text = str(candidate or '').strip()
+        if not candidate_text:
+            continue
+        weekday_value = mapping.get(candidate_text)
+        if weekday_value is None:
+            raise ValueError("每周几更新格式不正确")
+        if weekday_value not in normalized_values:
+            normalized_values.append(weekday_value)
+    return normalized_values
+
+
+def normalize_resource_remark(value: Any) -> str:
+    return str(value or '').strip()
 
 
 def get_resource_drive_label(drive_type: str) -> str:
@@ -214,11 +333,64 @@ def detect_resource_drive_and_url(content: str, preferred_drive_type: Optional[s
     return drive_type, resource_url
 
 
-def validate_resource_link_payload(payload: Dict[str, Any]) -> Dict[str, str]:
+def validate_resource_metadata_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     resource_name = normalize_resource_text_field(payload.get('resource_name'), "资源名称")
     resource_type = normalize_resource_type(payload.get('resource_type'))
+    recommend_level = normalize_resource_recommend_level(payload.get('recommend_level'))
+    update_mode = normalize_resource_update_mode(payload.get('update_mode'))
+    update_weekdays = normalize_resource_update_weekdays(payload.get('update_weekdays'))
+    daily_episode_count = normalize_resource_positive_int(payload.get('daily_episode_count'), "每天更新几集")
+    interval_days = normalize_resource_positive_int(payload.get('interval_days'), "每隔几天更新")
+    latest_episode = normalize_resource_positive_int(payload.get('latest_episode'), "更新到第几集")
+    is_completed = normalize_resource_bool(payload.get('is_completed'))
+    remark = normalize_resource_remark(payload.get('remark'))
+
+    if update_mode == 'weekly' and not update_weekdays:
+        raise ValueError("周更资源请至少选择一个更新日")
+    if update_mode == 'daily':
+        if daily_episode_count <= 0:
+            raise ValueError("日更资源请填写每天更新几集")
+        update_weekdays = []
+        interval_days = 0
+    elif update_mode == 'interval':
+        if interval_days <= 0:
+            raise ValueError("固定几天更新资源请填写更新间隔")
+        update_weekdays = []
+        daily_episode_count = 0
+    else:
+        update_weekdays = []
+        daily_episode_count = 0
+        interval_days = 0
+
+    return {
+        'resource_name': resource_name,
+        'resource_type': resource_type,
+        'recommend_level': recommend_level,
+        'update_mode': update_mode,
+        'update_weekdays': update_weekdays,
+        'daily_episode_count': daily_episode_count,
+        'interval_days': interval_days,
+        'latest_episode': latest_episode,
+        'is_completed': is_completed,
+        'remark': remark,
+    }
+
+
+def validate_resource_link_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    resource_id_raw = payload.get('resource_id')
+    resource_name = str(payload.get('resource_name') or '').strip()
     raw_drive_type = payload.get('drive_type')
     raw_resource_url = (payload.get('resource_url') or '').strip()
+
+    resource_id = None
+    if resource_id_raw not in (None, ''):
+        try:
+            resource_id = int(resource_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("资源ID格式不正确") from exc
+
+    if resource_id is None and not resource_name:
+        raise ValueError("请选择关联资源")
 
     if not raw_resource_url:
         raise ValueError("资源链接不能为空")
@@ -241,8 +413,8 @@ def validate_resource_link_payload(payload: Dict[str, Any]) -> Dict[str, str]:
         drive_type = detected_drive_type
 
     return {
+        'resource_id': resource_id,
         'resource_name': resource_name,
-        'resource_type': resource_type,
         'drive_type': drive_type,
         'resource_url': resource_url,
     }
@@ -261,9 +433,11 @@ def parse_resource_share_block(content: str) -> Dict[str, str]:
     }
 
 
-def parse_resource_import_content(resource_name: str, resource_type: str, content: str) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+def parse_resource_import_content(
+    resource_name: str,
+    content: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     normalized_resource_name = normalize_resource_text_field(resource_name, "资源名称")
-    normalized_resource_type = normalize_resource_type(resource_type)
 
     normalized_content = content.replace('\r\n', '\n').strip()
     if not normalized_content:
@@ -281,7 +455,6 @@ def parse_resource_import_content(resource_name: str, resource_type: str, conten
         try:
             item = parse_resource_share_block(block)
             item['resource_name'] = normalized_resource_name
-            item['resource_type'] = normalized_resource_type
             dedupe_key = item['drive_type']
             if dedupe_key in seen_keys:
                 raise ValueError(
@@ -315,7 +488,7 @@ def decode_resource_csv_content(raw_bytes: bytes) -> str:
     raise ValueError("CSV 文件编码无法识别，请使用 UTF-8 或 GBK 编码后重试")
 
 
-def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     normalized_content = content.strip()
     if not normalized_content:
         raise ValueError("CSV 文件内容不能为空")
@@ -326,13 +499,11 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
 
     header_aliases = {
         'resource_name': {'resource_name', 'resourcename', '资源名称', '资源名', '名称'},
-        'resource_type': {'resource_type', 'resourcetype', '资源类型', '分类', '内容类型'},
         'drive_type': {'drive_type', 'drivetype', '网盘类型', '网盘'},
         'resource_url': {'resource_url', 'resourceurl', '资源链接', '链接', '资源地址', '地址'},
     }
     header_labels = {
         'resource_name': '资源名称',
-        'resource_type': '资源类型',
         'drive_type': '网盘类型',
         'resource_url': '资源链接',
     }
@@ -340,6 +511,7 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
     field_mapping: Dict[str, str] = {}
     normalized_fields = {normalize_resource_csv_header(field): field for field in reader.fieldnames if field}
 
+    required_fields = {'resource_name', 'resource_type', 'drive_type', 'resource_url'}
     for target_field, aliases in header_aliases.items():
         matched_field = None
         for alias in aliases:
@@ -347,9 +519,10 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
             if normalized_alias in normalized_fields:
                 matched_field = normalized_fields[normalized_alias]
                 break
-        if not matched_field:
+        if not matched_field and target_field in required_fields:
             raise ValueError(f"CSV 文件缺少必要列：{header_labels[target_field]}")
-        field_mapping[target_field] = matched_field
+        if matched_field:
+            field_mapping[target_field] = matched_field
 
     parsed_items: List[Dict[str, str]] = []
     errors: List[Dict[str, Any]] = []
@@ -362,7 +535,6 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
         try:
             payload = validate_resource_link_payload({
                 'resource_name': row.get(field_mapping['resource_name'], ''),
-                'resource_type': row.get(field_mapping['resource_type'], ''),
                 'drive_type': row.get(field_mapping['drive_type'], ''),
                 'resource_url': row.get(field_mapping['resource_url'], ''),
             })
@@ -375,8 +547,8 @@ def parse_resource_csv_content(content: str) -> Tuple[List[Dict[str, str]], List
             parsed_items.append(payload)
         except ValueError as exc:
             preview = ' | '.join(
-                str(row.get(field_mapping[field], '') or '').strip()
-                for field in ('resource_name', 'resource_type', 'drive_type', 'resource_url')
+                str(row.get(field_mapping.get(field, ''), '') or '').strip()
+                for field in ('resource_name', 'drive_type', 'resource_url')
             )[:120]
             errors.append({
                 'index': row_number,
@@ -415,11 +587,10 @@ def execute_resource_link_import(items: List[Dict[str, str]], user_id: int) -> D
 
     for item in items:
         result = db_manager.upsert_resource_link(
-            resource_name=item['resource_name'],
-            resource_type=item['resource_type'],
             drive_type=item['drive_type'],
             resource_url=item['resource_url'],
-            user_id=user_id
+            user_id=user_id,
+            resource_name=item['resource_name'],
         )
         if result['action'] == 'created':
             created_count += 1
@@ -912,6 +1083,7 @@ logger.info("Web服务器启动，文件日志收集器已初始化")
 FRONTEND_API_CONFLICT_PATHS = {
     '/items',
     '/cards',
+    '/resources',
     '/resource-links',
     '/notification-channels',
     '/message-notifications',
@@ -4745,6 +4917,165 @@ def debug_keywords_table_info(current_user: Dict[str, Any] = Depends(get_current
 
 
 # 卡密资源管理API
+@app.get("/resources")
+def get_resources(
+    keyword: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取当前用户的资源列表"""
+    try:
+        normalized_resource_type = normalize_resource_type(resource_type) if resource_type else None
+        return db_manager.list_resources(
+            current_user['user_id'],
+            keyword,
+            normalized_resource_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/resources")
+def create_resource(resource_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """创建资源"""
+    try:
+        payload = validate_resource_metadata_payload(resource_data)
+        resource_id = db_manager.create_resource(
+            resource_name=payload['resource_name'],
+            resource_type=payload['resource_type'],
+            user_id=current_user['user_id'],
+            recommend_level=payload['recommend_level'],
+            update_mode=payload['update_mode'],
+            update_weekdays=payload['update_weekdays'],
+            daily_episode_count=payload['daily_episode_count'],
+            interval_days=payload['interval_days'],
+            latest_episode=payload['latest_episode'],
+            is_completed=payload['is_completed'],
+            remark=payload['remark'],
+        )
+        return {"id": resource_id, "message": "资源创建成功"}
+    except ValueError as e:
+        status_code = 409 if "资源已存在" in str(e) else 400
+        raise HTTPException(status_code=status_code, detail=str(e))
+    except Exception as e:
+        log_with_user('error', f"创建资源失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/resources/{resource_id}")
+def get_resource(resource_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取单个资源详情"""
+    try:
+        resource = db_manager.get_resource_by_id(resource_id, current_user['user_id'])
+        if resource:
+            return resource
+        raise HTTPException(status_code=404, detail="资源不存在")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/resources/{resource_id}")
+def update_resource(resource_id: int, resource_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新资源"""
+    try:
+        payload = validate_resource_metadata_payload(resource_data)
+        success = db_manager.update_resource(
+            resource_id=resource_id,
+            user_id=current_user['user_id'],
+            resource_name=payload['resource_name'],
+            resource_type=payload['resource_type'],
+            recommend_level=payload['recommend_level'],
+            update_mode=payload['update_mode'],
+            update_weekdays=payload['update_weekdays'],
+            daily_episode_count=payload['daily_episode_count'],
+            interval_days=payload['interval_days'],
+            latest_episode=payload['latest_episode'],
+            is_completed=payload['is_completed'],
+            remark=payload['remark'],
+        )
+        if success:
+            return {"message": "资源更新成功"}
+        raise HTTPException(status_code=404, detail="资源不存在")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        status_code = 409 if "资源已存在" in str(e) else 400
+        raise HTTPException(status_code=status_code, detail=str(e))
+    except Exception as e:
+        log_with_user('error', f"更新资源失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/resources/{resource_id}")
+def delete_resource(resource_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """删除资源"""
+    try:
+        success = db_manager.delete_resource(resource_id, current_user['user_id'])
+        if success:
+            return {"message": "资源删除成功"}
+        raise HTTPException(status_code=404, detail="资源不存在")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"删除资源失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/resources/{resource_id}/item-associations")
+def get_resource_item_associations(resource_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取资源的商品关联候选列表"""
+    try:
+        result = db_manager.get_resource_items(resource_id, current_user['user_id'])
+        if not result:
+            raise HTTPException(status_code=404, detail="资源不存在")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"获取资源关联商品失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/resources/{resource_id}/item-associations")
+def update_resource_item_associations(resource_id: int, payload: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新资源的商品关联关系"""
+    try:
+        item_ids = payload.get('item_ids', [])
+        if item_ids is None:
+            item_ids = []
+        if not isinstance(item_ids, list):
+            raise HTTPException(status_code=400, detail="item_ids 必须是数组")
+
+        try:
+            normalized_item_ids = [int(item_id) for item_id in item_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="item_ids 必须是数字数组")
+
+        result = db_manager.update_resource_items(resource_id, current_user['user_id'], normalized_item_ids)
+        if not result:
+            raise HTTPException(status_code=404, detail="资源不存在")
+
+        return {
+            "message": (
+                f"关联已更新，新增 {result['added_count']} 个，"
+                f"替换 {result['replaced_count']} 个，解除 {result['removed_count']} 个"
+            ),
+            **result,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log_with_user('error', f"更新资源关联商品失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 卡密管理API
 @app.get("/resource-links")
 def get_resource_links(
     keyword: Optional[str] = None,
@@ -4776,19 +5107,19 @@ def create_resource_link(link_data: dict, current_user: Dict[str, Any] = Depends
         payload = validate_resource_link_payload(link_data)
         log_with_user(
             'info',
-            f"创建卡密资源: {payload['resource_name']} / {payload['resource_type']} / {get_resource_drive_label(payload['drive_type'])}",
+            f"创建卡密资源: {payload['resource_name'] or payload.get('resource_id')} / {get_resource_drive_label(payload['drive_type'])}",
             current_user
         )
         link_id = db_manager.create_resource_link(
-            resource_name=payload['resource_name'],
-            resource_type=payload['resource_type'],
             drive_type=payload['drive_type'],
             resource_url=payload['resource_url'],
-            user_id=current_user['user_id']
+            user_id=current_user['user_id'],
+            resource_id=payload.get('resource_id'),
+            resource_name=payload.get('resource_name'),
         )
         return {"id": link_id, "message": "卡密资源创建成功"}
     except ValueError as e:
-        status_code = 409 if "资源已存在" in str(e) else 400
+        status_code = 409 if "已存在" in str(e) else 400
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         log_with_user('error', f"创建卡密资源失败: {str(e)}", current_user)
@@ -4800,11 +5131,10 @@ def import_resource_links(import_data: dict, current_user: Dict[str, Any] = Depe
     """通过分享口令批量导入卡密资源"""
     try:
         resource_name = (import_data.get('resource_name') or '').strip()
-        resource_type = (import_data.get('resource_type') or '').strip()
         content = (import_data.get('content') or '').strip()
         confirm_update = bool(import_data.get('confirm_update', False))
 
-        parsed_items, errors = parse_resource_import_content(resource_name, resource_type, content)
+        parsed_items, errors = parse_resource_import_content(resource_name, content)
         if errors:
             return {
                 "success": False,
@@ -5070,15 +5400,15 @@ def update_resource_link(link_id: int, link_data: dict, current_user: Dict[str, 
         success = db_manager.update_resource_link(
             link_id=link_id,
             user_id=current_user['user_id'],
-            resource_name=payload['resource_name'],
-            resource_type=payload['resource_type'],
+            resource_id=payload.get('resource_id'),
             drive_type=payload['drive_type'],
-            resource_url=payload['resource_url']
+            resource_url=payload['resource_url'],
+            resource_name=payload.get('resource_name'),
         )
         if success:
             log_with_user(
                 'info',
-                f"更新卡密资源成功: {payload['resource_name']} / {payload['resource_type']} / {get_resource_drive_label(payload['drive_type'])}",
+                f"更新卡密资源成功: {payload['resource_name'] or payload.get('resource_id')} / {get_resource_drive_label(payload['drive_type'])}",
                 current_user
             )
             return {"message": "卡密资源更新成功"}
@@ -5086,7 +5416,7 @@ def update_resource_link(link_id: int, link_data: dict, current_user: Dict[str, 
     except HTTPException:
         raise
     except ValueError as e:
-        status_code = 409 if "资源已存在" in str(e) else 400
+        status_code = 409 if "已存在" in str(e) else 400
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         log_with_user('error', f"更新卡密资源失败: {str(e)}", current_user)
@@ -7081,7 +7411,7 @@ def get_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(require
         allowed_tables = [
             'users', 'cookies', 'cookie_status', 'keywords', 'default_replies', 'default_reply_records',
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
-            'message_notifications', 'cards', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
+            'message_notifications', 'cards', 'resources', 'resource_items', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
             'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', "item_replay",
             'risk_control_logs'
         ]
@@ -7119,7 +7449,7 @@ def delete_table_record(table_name: str, record_id: str, admin_user: Dict[str, A
         allowed_tables = [
             'users', 'cookies', 'cookie_status', 'keywords', 'default_replies', 'default_reply_records',
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
-            'message_notifications', 'cards', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
+            'message_notifications', 'cards', 'resources', 'resource_items', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
             'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders','item_replay'
         ]
 
@@ -7159,7 +7489,7 @@ def clear_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(requi
         allowed_tables = [
             'cookies', 'cookie_status', 'keywords', 'default_replies', 'default_reply_records',
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
-            'message_notifications', 'cards', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
+            'message_notifications', 'cards', 'resources', 'resource_items', 'resource_links', 'resource_link_items', 'delivery_rules', 'notification_channels',
             'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', 'item_replay',
             'risk_control_logs'
         ]

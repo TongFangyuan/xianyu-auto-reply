@@ -218,20 +218,54 @@ class DBManager:
 
             # 创建卡密资源表
             cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_name TEXT NOT NULL,
+                resource_type TEXT NOT NULL DEFAULT '',
+                recommend_level INTEGER NOT NULL DEFAULT 0,
+                update_mode TEXT NOT NULL DEFAULT '',
+                update_weekdays TEXT NOT NULL DEFAULT '[]',
+                daily_episode_count INTEGER NOT NULL DEFAULT 0,
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                latest_episode INTEGER NOT NULL DEFAULT 0,
+                is_completed BOOLEAN NOT NULL DEFAULT FALSE,
+                remark TEXT NOT NULL DEFAULT '',
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(resource_name, user_id)
+            )
+            ''')
+
+            cursor.execute('''
             CREATE TABLE IF NOT EXISTS resource_links (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER,
                 resource_name TEXT NOT NULL,
                 resource_type TEXT NOT NULL DEFAULT '',
                 drive_type TEXT NOT NULL,
                 resource_url TEXT NOT NULL,
+                recommend_level INTEGER NOT NULL DEFAULT 0,
+                update_mode TEXT NOT NULL DEFAULT '',
+                update_weekdays TEXT NOT NULL DEFAULT '[]',
+                daily_episode_count INTEGER NOT NULL DEFAULT 0,
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                latest_episode INTEGER NOT NULL DEFAULT 0,
+                is_completed BOOLEAN NOT NULL DEFAULT FALSE,
+                remark TEXT NOT NULL DEFAULT '',
                 user_id INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (resource_id) REFERENCES resources (id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
                 UNIQUE(resource_name, drive_type, user_id)
             )
             ''')
 
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_user_id ON resources(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(resource_name)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_user_id ON resource_links(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_name ON resource_links(resource_name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_drive_type ON resource_links(drive_type)")
@@ -308,6 +342,23 @@ class DBManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
                 UNIQUE(cookie_id, item_id)
+            )
+            ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resource_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL,
+                item_info_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+                FOREIGN KEY (item_info_id) REFERENCES item_info(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(resource_id),
+                UNIQUE(resource_id, item_info_id),
+                UNIQUE(user_id, item_info_id)
             )
             ''')
 
@@ -572,8 +623,29 @@ class DBManager:
             pass
 
     def _migrate_resource_link_tables(self, cursor):
-        """升级资源表结构，支持资源类型和自定义网盘类型"""
+        """升级资源表结构，支持资源元数据和自定义网盘类型"""
         try:
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_name TEXT NOT NULL,
+                resource_type TEXT NOT NULL DEFAULT '',
+                recommend_level INTEGER NOT NULL DEFAULT 0,
+                update_mode TEXT NOT NULL DEFAULT '',
+                update_weekdays TEXT NOT NULL DEFAULT '[]',
+                daily_episode_count INTEGER NOT NULL DEFAULT 0,
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                latest_episode INTEGER NOT NULL DEFAULT 0,
+                is_completed BOOLEAN NOT NULL DEFAULT FALSE,
+                remark TEXT NOT NULL DEFAULT '',
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(resource_name, user_id)
+            )
+            ''')
+
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='resource_links'")
             if cursor.fetchone():
                 cursor.execute("PRAGMA table_info(resource_links)")
@@ -589,31 +661,54 @@ class DBManager:
                 )
 
                 if needs_rebuild_resource_links:
-                    logger.info("开始升级resource_links表结构，支持资源类型和自定义网盘类型...")
+                    logger.info("开始升级resource_links表结构，支持资源类型、资源元数据和自定义网盘类型...")
                     cursor.execute("DROP TABLE IF EXISTS resource_links_new")
                     cursor.execute('''
                     CREATE TABLE resource_links_new (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        resource_id INTEGER,
                         resource_name TEXT NOT NULL,
                         resource_type TEXT NOT NULL DEFAULT '',
                         drive_type TEXT NOT NULL,
                         resource_url TEXT NOT NULL,
+                        recommend_level INTEGER NOT NULL DEFAULT 0,
+                        update_mode TEXT NOT NULL DEFAULT '',
+                        update_weekdays TEXT NOT NULL DEFAULT '[]',
+                        daily_episode_count INTEGER NOT NULL DEFAULT 0,
+                        interval_days INTEGER NOT NULL DEFAULT 0,
+                        latest_episode INTEGER NOT NULL DEFAULT 0,
+                        is_completed BOOLEAN NOT NULL DEFAULT FALSE,
+                        remark TEXT NOT NULL DEFAULT '',
                         user_id INTEGER NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (resource_id) REFERENCES resources (id) ON DELETE CASCADE,
                         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
                         UNIQUE(resource_name, drive_type, user_id)
                     )
                     ''')
 
+                    resource_id_select = "resource_id" if 'resource_id' in resource_link_column_names else "NULL"
                     resource_type_select = "COALESCE(resource_type, '')" if 'resource_type' in resource_link_column_names else "''"
+                    recommend_level_select = "COALESCE(recommend_level, 0)" if 'recommend_level' in resource_link_column_names else "0"
+                    update_mode_select = "COALESCE(update_mode, '')" if 'update_mode' in resource_link_column_names else "''"
+                    update_weekdays_select = "COALESCE(update_weekdays, '[]')" if 'update_weekdays' in resource_link_column_names else "'[]'"
+                    daily_episode_count_select = "COALESCE(daily_episode_count, 0)" if 'daily_episode_count' in resource_link_column_names else "0"
+                    interval_days_select = "COALESCE(interval_days, 0)" if 'interval_days' in resource_link_column_names else "0"
+                    latest_episode_select = "COALESCE(latest_episode, 0)" if 'latest_episode' in resource_link_column_names else "0"
+                    is_completed_select = "COALESCE(is_completed, 0)" if 'is_completed' in resource_link_column_names else "0"
+                    remark_select = "COALESCE(remark, '')" if 'remark' in resource_link_column_names else "''"
                     cursor.execute(f'''
                     INSERT INTO resource_links_new (
-                        id, resource_name, resource_type, drive_type, resource_url,
+                        id, resource_id, resource_name, resource_type, drive_type, resource_url,
+                        recommend_level, update_mode, update_weekdays, daily_episode_count,
+                        interval_days, latest_episode, is_completed, remark,
                         user_id, created_at, updated_at
                     )
                     SELECT
-                        id, resource_name, {resource_type_select}, drive_type, resource_url,
+                        id, {resource_id_select}, resource_name, {resource_type_select}, drive_type, resource_url,
+                        {recommend_level_select}, {update_mode_select}, {update_weekdays_select}, {daily_episode_count_select},
+                        {interval_days_select}, {latest_episode_select}, {is_completed_select}, {remark_select},
                         user_id, created_at, updated_at
                     FROM resource_links
                     ''')
@@ -621,6 +716,88 @@ class DBManager:
                     cursor.execute("DROP TABLE resource_links")
                     cursor.execute("ALTER TABLE resource_links_new RENAME TO resource_links")
                     logger.info("resource_links表结构升级完成")
+                    cursor.execute("PRAGMA table_info(resource_links)")
+                    resource_link_column_names = [column[1] for column in cursor.fetchall()]
+
+                additional_columns = [
+                    ('resource_id', "ALTER TABLE resource_links ADD COLUMN resource_id INTEGER REFERENCES resources(id) ON DELETE CASCADE"),
+                    ('recommend_level', "ALTER TABLE resource_links ADD COLUMN recommend_level INTEGER NOT NULL DEFAULT 0"),
+                    ('update_mode', "ALTER TABLE resource_links ADD COLUMN update_mode TEXT NOT NULL DEFAULT ''"),
+                    ('update_weekdays', "ALTER TABLE resource_links ADD COLUMN update_weekdays TEXT NOT NULL DEFAULT '[]'"),
+                    ('daily_episode_count', "ALTER TABLE resource_links ADD COLUMN daily_episode_count INTEGER NOT NULL DEFAULT 0"),
+                    ('interval_days', "ALTER TABLE resource_links ADD COLUMN interval_days INTEGER NOT NULL DEFAULT 0"),
+                    ('latest_episode', "ALTER TABLE resource_links ADD COLUMN latest_episode INTEGER NOT NULL DEFAULT 0"),
+                    ('is_completed', "ALTER TABLE resource_links ADD COLUMN is_completed BOOLEAN NOT NULL DEFAULT 0"),
+                    ('remark', "ALTER TABLE resource_links ADD COLUMN remark TEXT NOT NULL DEFAULT ''"),
+                ]
+
+                for column_name, alter_sql in additional_columns:
+                    if column_name not in resource_link_column_names:
+                        logger.info(f"正在为 resource_links 表添加 {column_name} 列...")
+                        cursor.execute(alter_sql)
+                        logger.info(f"resource_links 表 {column_name} 列添加完成")
+
+                cursor.execute('''
+                SELECT user_id, resource_name, resource_type, recommend_level, update_mode, update_weekdays,
+                       daily_episode_count, interval_days, latest_episode, is_completed, remark,
+                       created_at, updated_at
+                FROM resource_links
+                ORDER BY updated_at DESC, id DESC
+                ''')
+                for row in cursor.fetchall():
+                    user_id = row[0]
+                    resource_name = row[1]
+                    cursor.execute('''
+                    INSERT OR IGNORE INTO resources (
+                        resource_name, resource_type, recommend_level, update_mode, update_weekdays,
+                        daily_episode_count, interval_days, latest_episode, is_completed, remark,
+                        user_id, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        resource_name,
+                        row[2] or '',
+                        int(row[3] or 0),
+                        row[4] or '',
+                        row[5] or '[]',
+                        int(row[6] or 0),
+                        int(row[7] or 0),
+                        int(row[8] or 0),
+                        int(row[9] or 0),
+                        row[10] or '',
+                        user_id,
+                        row[11],
+                        row[12],
+                    ))
+
+                cursor.execute('''
+                UPDATE resource_links
+                SET resource_id = (
+                    SELECT r.id
+                    FROM resources r
+                    WHERE r.user_id = resource_links.user_id
+                      AND r.resource_name = resource_links.resource_name
+                    LIMIT 1
+                )
+                WHERE resource_id IS NULL
+                ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resource_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL,
+                item_info_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+                FOREIGN KEY (item_info_id) REFERENCES item_info(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(resource_id),
+                UNIQUE(resource_id, item_info_id),
+                UNIQUE(user_id, item_info_id)
+            )
+            ''')
 
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='resource_link_items'")
             if cursor.fetchone():
@@ -670,12 +847,37 @@ class DBManager:
                     cursor.execute("DROP TABLE resource_link_items")
                     cursor.execute("ALTER TABLE resource_link_items_new RENAME TO resource_link_items")
                     logger.info("resource_link_items表结构升级完成")
+
+                cursor.execute("SELECT id FROM resource_items LIMIT 1")
+                existing_resource_item = cursor.fetchone()
+                if not existing_resource_item:
+                    cursor.execute('''
+                    SELECT rl.resource_id, rli.item_info_id, rli.user_id, COALESCE(rli.updated_at, rli.created_at), rli.id
+                    FROM resource_link_items rli
+                    INNER JOIN resource_links rl ON rl.id = rli.resource_link_id
+                    WHERE rl.resource_id IS NOT NULL
+                    ORDER BY COALESCE(rli.updated_at, rli.created_at) DESC, rli.id DESC
+                    ''')
+                    used_resource_ids = set()
+                    used_item_ids = set()
+                    for resource_id, item_info_id, user_id, _, _ in cursor.fetchall():
+                        if resource_id in used_resource_ids or item_info_id in used_item_ids:
+                            continue
+                        cursor.execute('''
+                        INSERT OR IGNORE INTO resource_items (resource_id, item_info_id, user_id)
+                        VALUES (?, ?, ?)
+                        ''', (resource_id, item_info_id, user_id))
+                        used_resource_ids.add(resource_id)
+                        used_item_ids.add(item_info_id)
         except Exception as e:
             logger.error(f"升级资源表失败: {e}")
             raise
 
     def _ensure_resource_link_indexes(self, cursor):
         """确保资源表索引和单资源单商品约束清理逻辑已就绪"""
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_user_id ON resources(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(resource_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)")
         cursor.execute('''
         DELETE FROM resource_link_items
         WHERE id NOT IN (
@@ -686,9 +888,13 @@ class DBManager:
         ''')
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_user_id ON resource_links(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_resource_id ON resource_links(resource_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_name ON resource_links(resource_name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_type ON resource_links(resource_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_links_drive_type ON resource_links(drive_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_items_resource_id ON resource_items(resource_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_items_item_id ON resource_items(item_info_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_items_user_id ON resource_items(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_link_id ON resource_link_items(resource_link_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_item_id ON resource_link_items(item_info_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_resource_link_items_user_drive ON resource_link_items(user_id, drive_type)")
@@ -2679,6 +2885,22 @@ class DBManager:
                                 'rows': [list(row) for row in rows]
                             }
 
+                    self._execute_sql(cursor, "SELECT * FROM resources WHERE user_id = ?", (user_id,))
+                    columns = [description[0] for description in cursor.description]
+                    rows = cursor.fetchall()
+                    backup_data['data']['resources'] = {
+                        'columns': columns,
+                        'rows': [list(row) for row in rows]
+                    }
+
+                    self._execute_sql(cursor, "SELECT * FROM resource_items WHERE user_id = ?", (user_id,))
+                    columns = [description[0] for description in cursor.description]
+                    rows = cursor.fetchall()
+                    backup_data['data']['resource_items'] = {
+                        'columns': columns,
+                        'rows': [list(row) for row in rows]
+                    }
+
                     self._execute_sql(cursor, "SELECT * FROM resource_links WHERE user_id = ?", (user_id,))
                     columns = [description[0] for description in cursor.description]
                     rows = cursor.fetchall()
@@ -2697,7 +2919,7 @@ class DBManager:
                 else:
                     # 系统级备份：备份所有数据
                     tables = [
-                        'cookies', 'keywords', 'cookie_status', 'cards', 'resource_links',
+                        'cookies', 'keywords', 'cookie_status', 'cards', 'resources', 'resource_items', 'resource_links',
                         'delivery_rules', 'default_replies', 'notification_channels',
                         'message_notifications', 'system_settings', 'item_info', 'resource_link_items',
                         'ai_reply_settings', 'ai_conversations', 'ai_item_cache'
@@ -2739,7 +2961,9 @@ class DBManager:
                     user_cookie_ids = [row[0] for row in cursor.fetchall()]
 
                     self._execute_sql(cursor, "DELETE FROM resource_link_items WHERE user_id = ?", (user_id,))
+                    self._execute_sql(cursor, "DELETE FROM resource_items WHERE user_id = ?", (user_id,))
                     self._execute_sql(cursor, "DELETE FROM resource_links WHERE user_id = ?", (user_id,))
+                    self._execute_sql(cursor, "DELETE FROM resources WHERE user_id = ?", (user_id,))
 
                     if user_cookie_ids:
                         placeholders = ','.join(['?' for _ in user_cookie_ids])
@@ -2757,7 +2981,7 @@ class DBManager:
                     # 系统级导入：清空所有数据（除了用户和管理员密码）
                     tables = [
                         'message_notifications', 'notification_channels', 'default_replies',
-                        'delivery_rules', 'cards', 'resource_link_items', 'resource_links', 'item_info', 'cookie_status', 'keywords',
+                        'delivery_rules', 'cards', 'resource_link_items', 'resource_items', 'resource_links', 'resources', 'item_info', 'cookie_status', 'keywords',
                         'ai_conversations', 'ai_reply_settings', 'ai_item_cache', 'cookies'
                     ]
 
@@ -2770,7 +2994,7 @@ class DBManager:
                 # 导入数据
                 data = backup_data['data']
                 for table_name, table_data in data.items():
-                    if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards', 'resource_links', 'resource_link_items',
+                    if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards', 'resources', 'resource_items', 'resource_links', 'resource_link_items',
                                         'delivery_rules', 'default_replies', 'notification_channels',
                                         'message_notifications', 'system_settings', 'item_info',
                                         'ai_reply_settings', 'ai_conversations', 'ai_item_cache']:
@@ -2798,6 +3022,20 @@ class DBManager:
                             row_dict['user_id'] = user_id
                             updated_rows.append([row_dict[col] for col in columns])
                         rows = updated_rows
+                    elif user_id is not None and table_name == 'resources':
+                        updated_rows = []
+                        for row in rows:
+                            row_dict = dict(zip(columns, row))
+                            row_dict['user_id'] = user_id
+                            updated_rows.append([row_dict[col] for col in columns])
+                        rows = updated_rows
+                    elif user_id is not None and table_name == 'resource_items':
+                        updated_rows = []
+                        for row in rows:
+                            row_dict = dict(zip(columns, row))
+                            row_dict['user_id'] = user_id
+                            updated_rows.append([row_dict[col] for col in columns])
+                        rows = updated_rows
                     elif user_id is not None and table_name == 'resource_link_items':
                         updated_rows = []
                         for row in rows:
@@ -2811,6 +3049,13 @@ class DBManager:
                         deduped_rows = {}
                         for row in rows:
                             deduped_rows[row[resource_link_id_index]] = row
+                        rows = list(deduped_rows.values())
+                    elif table_name == 'resource_items':
+                        resource_id_index = columns.index('resource_id')
+                        item_info_id_index = columns.index('item_info_id')
+                        deduped_rows = {}
+                        for row in rows:
+                            deduped_rows[(row[resource_id_index], row[item_info_id_index])] = row
                         rows = list(deduped_rows.values())
 
                     # 构建插入语句
@@ -3294,10 +3539,48 @@ class DBManager:
 
     # ==================== 卡密资源管理方法 ====================
 
+    def _get_resource_association_count(self, cursor, resource_id: int) -> int:
+        self._execute_sql(
+            cursor,
+            "SELECT COUNT(*) FROM resource_items WHERE resource_id = ?",
+            (resource_id,)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    def _get_resource_item_previews(self, cursor, resource_id: int, limit: int = 2) -> List[Dict[str, Any]]:
+        self._execute_sql(cursor, '''
+        SELECT i.id, i.cookie_id, i.item_id,
+               CASE
+                   WHEN i.item_title IS NULL OR TRIM(i.item_title) = '' THEN i.item_id
+                   ELSE i.item_title
+               END AS display_title
+        FROM resource_items ri
+        INNER JOIN item_info i ON i.id = ri.item_info_id
+        WHERE ri.resource_id = ?
+        ORDER BY ri.updated_at DESC, ri.id DESC
+        LIMIT ?
+        ''', (resource_id, limit))
+
+        return [
+            {
+                'item_info_id': row[0],
+                'cookie_id': row[1],
+                'item_id': row[2],
+                'item_title': row[3],
+            }
+            for row in cursor.fetchall()
+        ]
+
     def _get_resource_link_association_count(self, cursor, resource_link_id: int) -> int:
         self._execute_sql(
             cursor,
-            "SELECT COUNT(*) FROM resource_link_items WHERE resource_link_id = ?",
+            '''
+            SELECT COUNT(*)
+            FROM resource_items ri
+            INNER JOIN resource_links rl ON rl.resource_id = ri.resource_id
+            WHERE rl.id = ?
+            ''',
             (resource_link_id,)
         )
         result = cursor.fetchone()
@@ -3327,47 +3610,427 @@ class DBManager:
             for row in cursor.fetchall()
         ]
 
-    def _serialize_resource_link_row(self, row, cursor=None) -> Dict[str, Any]:
+    def _get_resource_select_sql(self) -> str:
+        return '''
+        SELECT r.id, r.resource_name, r.resource_type, r.recommend_level, r.update_mode,
+               r.update_weekdays, r.daily_episode_count, r.interval_days, r.latest_episode,
+               r.is_completed, r.remark, r.created_at, r.updated_at,
+               (
+                   SELECT COUNT(*)
+                   FROM resource_items ri
+                   WHERE ri.resource_id = r.id
+               ) AS association_count
+        FROM resources r
+        '''
+
+    def _get_resource_link_select_sql(self) -> str:
+        return '''
+        SELECT rl.id,
+               COALESCE(r.id, rl.resource_id) AS resource_id,
+               COALESCE(r.resource_name, rl.resource_name) AS resource_name,
+               COALESCE(r.resource_type, rl.resource_type) AS resource_type,
+               rl.drive_type, rl.resource_url,
+               COALESCE(r.recommend_level, rl.recommend_level) AS recommend_level,
+               COALESCE(r.update_mode, rl.update_mode) AS update_mode,
+               COALESCE(r.update_weekdays, rl.update_weekdays) AS update_weekdays,
+               COALESCE(r.daily_episode_count, rl.daily_episode_count) AS daily_episode_count,
+               COALESCE(r.interval_days, rl.interval_days) AS interval_days,
+               COALESCE(r.latest_episode, rl.latest_episode) AS latest_episode,
+               COALESCE(r.is_completed, rl.is_completed) AS is_completed,
+               COALESCE(r.remark, rl.remark) AS remark,
+               rl.created_at, rl.updated_at,
+               (
+                   SELECT COUNT(*)
+                   FROM resource_items ri
+                   WHERE ri.resource_id = COALESCE(r.id, rl.resource_id)
+               ) AS association_count
+        FROM resource_links rl
+        LEFT JOIN resources r ON r.id = rl.resource_id
+        '''
+
+    def _decode_resource_link_weekdays(self, raw_value: Any) -> List[int]:
+        if raw_value is None:
+            return []
+
+        if isinstance(raw_value, list):
+            values = raw_value
+        else:
+            normalized = str(raw_value).strip()
+            if not normalized:
+                return []
+            try:
+                parsed = json.loads(normalized)
+                values = parsed if isinstance(parsed, list) else []
+            except json.JSONDecodeError:
+                values = [value.strip() for value in normalized.split(',') if value.strip()]
+
+        normalized_values: List[int] = []
+        for value in values:
+            try:
+                weekday = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= weekday <= 7 and weekday not in normalized_values:
+                normalized_values.append(weekday)
+        return normalized_values
+
+    def _encode_resource_link_weekdays(self, weekdays: List[int]) -> str:
+        normalized_values: List[int] = []
+        for value in weekdays or []:
+            try:
+                weekday = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= weekday <= 7 and weekday not in normalized_values:
+                normalized_values.append(weekday)
+        return json.dumps(normalized_values, ensure_ascii=False)
+
+    def _get_resource_group_metadata(self, cursor, resource_name: str, user_id: int) -> Optional[Dict[str, Any]]:
+        self._execute_sql(cursor, '''
+        SELECT resource_type, recommend_level, update_mode, update_weekdays, daily_episode_count,
+               interval_days, latest_episode, is_completed, remark
+        FROM resources
+        WHERE resource_name = ? AND user_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        ''', (resource_name, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            'resource_type': row[0] or '',
+            'recommend_level': int(row[1] or 0),
+            'update_mode': row[2] or '',
+            'update_weekdays': self._decode_resource_link_weekdays(row[3]),
+            'daily_episode_count': int(row[4] or 0),
+            'interval_days': int(row[5] or 0),
+            'latest_episode': int(row[6] or 0),
+            'is_completed': bool(row[7]),
+            'remark': row[8] or '',
+        }
+
+    def _serialize_resource_row(self, row, cursor=None) -> Dict[str, Any]:
         local_cursor = cursor or self.conn.cursor()
-        association_count = row[7] if len(row) > 7 else self._get_resource_link_association_count(local_cursor, row[0])
+        association_count = row[13] if len(row) > 13 else self._get_resource_association_count(local_cursor, row[0])
         return {
             'id': row[0],
             'resource_name': row[1],
             'resource_type': row[2],
-            'drive_type': row[3],
-            'resource_url': row[4],
-            'created_at': row[5],
-            'updated_at': row[6],
+            'recommend_level': int(row[3] or 0),
+            'update_mode': row[4] or '',
+            'update_weekdays': self._decode_resource_link_weekdays(row[5]),
+            'daily_episode_count': int(row[6] or 0),
+            'interval_days': int(row[7] or 0),
+            'latest_episode': int(row[8] or 0),
+            'is_completed': bool(row[9]),
+            'remark': row[10] or '',
+            'created_at': row[11],
+            'updated_at': row[12],
             'association_count': association_count or 0,
-            'associated_items': self._get_resource_link_item_previews(local_cursor, row[0], limit=1),
+            'associated_items': self._get_resource_item_previews(local_cursor, row[0], limit=1),
         }
 
+    def _serialize_resource_link_row(self, row, cursor=None) -> Dict[str, Any]:
+        local_cursor = cursor or self.conn.cursor()
+        association_count = row[16] if len(row) > 16 else self._get_resource_link_association_count(local_cursor, row[0])
+        resource_id = row[1]
+        return {
+            'id': row[0],
+            'resource_id': resource_id,
+            'resource_name': row[2],
+            'resource_type': row[3],
+            'drive_type': row[4],
+            'resource_url': row[5],
+            'recommend_level': int(row[6] or 0),
+            'update_mode': row[7] or '',
+            'update_weekdays': self._decode_resource_link_weekdays(row[8]),
+            'daily_episode_count': int(row[9] or 0),
+            'interval_days': int(row[10] or 0),
+            'latest_episode': int(row[11] or 0),
+            'is_completed': bool(row[12]),
+            'remark': row[13] or '',
+            'created_at': row[14],
+            'updated_at': row[15],
+            'association_count': association_count or 0,
+            'associated_items': self._get_resource_item_previews(local_cursor, resource_id, limit=1) if resource_id else [],
+        }
+
+    def _update_resource_group_metadata(
+        self,
+        cursor,
+        user_id: int,
+        resource_id: int,
+        resource_name: str,
+        resource_type: str,
+        recommend_level: int,
+        update_mode: str,
+        update_weekdays: List[int],
+        daily_episode_count: int,
+        interval_days: int,
+        latest_episode: int,
+        is_completed: bool,
+        remark: str,
+        exclude_link_id: int = None
+    ):
+        sql = '''
+        UPDATE resources
+        SET resource_type = ?, recommend_level = ?, update_mode = ?, update_weekdays = ?,
+            daily_episode_count = ?, interval_days = ?, latest_episode = ?, is_completed = ?,
+            remark = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+        '''
+        params: List[Any] = [
+            resource_type,
+            int(recommend_level or 0),
+            update_mode or '',
+            self._encode_resource_link_weekdays(update_weekdays),
+            int(daily_episode_count or 0),
+            int(interval_days or 0),
+            int(latest_episode or 0),
+            1 if is_completed else 0,
+            remark or '',
+            resource_id,
+            user_id,
+        ]
+        self._execute_sql(cursor, sql, tuple(params))
+
+        link_sql = '''
+        UPDATE resource_links
+        SET resource_name = ?, resource_type = ?, recommend_level = ?, update_mode = ?, update_weekdays = ?,
+            daily_episode_count = ?, interval_days = ?, latest_episode = ?, is_completed = ?, remark = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE resource_id = ? AND user_id = ?
+        '''
+        link_params: List[Any] = [
+            resource_name,
+            resource_type,
+            int(recommend_level or 0),
+            update_mode or '',
+            self._encode_resource_link_weekdays(update_weekdays),
+            int(daily_episode_count or 0),
+            int(interval_days or 0),
+            int(latest_episode or 0),
+            1 if is_completed else 0,
+            remark or '',
+            resource_id,
+            user_id,
+        ]
+        if exclude_link_id is not None:
+            link_sql += " AND id != ?"
+            link_params.append(exclude_link_id)
+        self._execute_sql(cursor, link_sql, tuple(link_params))
+
     def _get_resource_link_core(self, cursor, link_id: int, user_id: int):
-        self._execute_sql(cursor, '''
-        SELECT rl.id, rl.resource_name, rl.resource_type, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
-               (
-                   SELECT COUNT(*)
-                   FROM resource_link_items rli
-                   WHERE rli.resource_link_id = rl.id
-               ) AS association_count
-        FROM resource_links rl
+        self._execute_sql(cursor, f'''
+        {self._get_resource_link_select_sql()}
         WHERE rl.id = ? AND rl.user_id = ?
         ''', (link_id, user_id))
         return cursor.fetchone()
+
+    def _get_resource_core(self, cursor, resource_id: int, user_id: int):
+        self._execute_sql(cursor, f'''
+        {self._get_resource_select_sql()}
+        WHERE r.id = ? AND r.user_id = ?
+        ''', (resource_id, user_id))
+        return cursor.fetchone()
+
+    def list_resources(self, user_id: int, keyword: str = None, resource_type: str = None):
+        """获取资源列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                sql = f'''
+                {self._get_resource_select_sql()}
+                WHERE r.user_id = ?
+                '''
+                params: List[Any] = [user_id]
+
+                if keyword:
+                    sql += " AND r.resource_name LIKE ?"
+                    params.append(f"%{keyword.strip()}%")
+                if resource_type:
+                    sql += " AND r.resource_type LIKE ?"
+                    params.append(f"%{resource_type.strip()}%")
+
+                sql += " ORDER BY r.updated_at DESC, r.id DESC"
+                self._execute_sql(cursor, sql, tuple(params))
+                return [self._serialize_resource_row(row, cursor) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取资源列表失败: {e}")
+                return []
+
+    def get_resource_by_id(self, resource_id: int, user_id: int):
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                row = self._get_resource_core(cursor, resource_id, user_id)
+                return self._serialize_resource_row(row, cursor) if row else None
+            except Exception as e:
+                logger.error(f"获取资源详情失败: {e}")
+                return None
+
+    def get_resource_by_name(self, resource_name: str, user_id: int):
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, f'''
+                {self._get_resource_select_sql()}
+                WHERE r.resource_name = ? AND r.user_id = ?
+                ''', (resource_name.strip(), user_id))
+                row = cursor.fetchone()
+                return self._serialize_resource_row(row, cursor) if row else None
+            except Exception as e:
+                logger.error(f"按名称获取资源失败: {e}")
+                return None
+
+    def create_resource(
+        self,
+        resource_name: str,
+        resource_type: str,
+        user_id: int,
+        recommend_level: int = 0,
+        update_mode: str = '',
+        update_weekdays: List[int] = None,
+        daily_episode_count: int = 0,
+        interval_days: int = 0,
+        latest_episode: int = 0,
+        is_completed: bool = False,
+        remark: str = ''
+    ):
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                resource_name = resource_name.strip()
+                self._execute_sql(cursor, '''
+                SELECT id FROM resources
+                WHERE resource_name = ? AND user_id = ?
+                ''', (resource_name, user_id))
+                if cursor.fetchone():
+                    raise ValueError(f"资源已存在：{resource_name}")
+
+                self._execute_sql(cursor, '''
+                INSERT INTO resources (
+                    resource_name, resource_type, recommend_level, update_mode, update_weekdays,
+                    daily_episode_count, interval_days, latest_episode, is_completed, remark, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    resource_name,
+                    resource_type.strip(),
+                    int(recommend_level or 0),
+                    (update_mode or '').strip(),
+                    self._encode_resource_link_weekdays(update_weekdays or []),
+                    int(daily_episode_count or 0),
+                    int(interval_days or 0),
+                    int(latest_episode or 0),
+                    1 if is_completed else 0,
+                    (remark or '').strip(),
+                    user_id,
+                ))
+                self.conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                logger.error(f"创建资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def update_resource(
+        self,
+        resource_id: int,
+        user_id: int,
+        resource_name: str,
+        resource_type: str,
+        recommend_level: int = 0,
+        update_mode: str = '',
+        update_weekdays: List[int] = None,
+        daily_episode_count: int = 0,
+        interval_days: int = 0,
+        latest_episode: int = 0,
+        is_completed: bool = False,
+        remark: str = ''
+    ):
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT id FROM resources
+                WHERE resource_name = ? AND user_id = ? AND id != ?
+                ''', (resource_name.strip(), user_id, resource_id))
+                if cursor.fetchone():
+                    raise ValueError(f"资源已存在：{resource_name.strip()}")
+
+                self._execute_sql(cursor, '''
+                UPDATE resources
+                SET resource_name = ?, resource_type = ?, recommend_level = ?, update_mode = ?, update_weekdays = ?,
+                    daily_episode_count = ?, interval_days = ?, latest_episode = ?, is_completed = ?, remark = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                ''', (
+                    resource_name.strip(),
+                    resource_type.strip(),
+                    int(recommend_level or 0),
+                    (update_mode or '').strip(),
+                    self._encode_resource_link_weekdays(update_weekdays or []),
+                    int(daily_episode_count or 0),
+                    int(interval_days or 0),
+                    int(latest_episode or 0),
+                    1 if is_completed else 0,
+                    (remark or '').strip(),
+                    resource_id,
+                    user_id,
+                ))
+                updated = cursor.rowcount > 0
+                if updated:
+                    self._execute_sql(cursor, '''
+                    UPDATE resource_links
+                    SET resource_name = ?, resource_type = ?, recommend_level = ?, update_mode = ?, update_weekdays = ?,
+                        daily_episode_count = ?, interval_days = ?, latest_episode = ?, is_completed = ?, remark = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE resource_id = ? AND user_id = ?
+                    ''', (
+                        resource_name.strip(),
+                        resource_type.strip(),
+                        int(recommend_level or 0),
+                        (update_mode or '').strip(),
+                        self._encode_resource_link_weekdays(update_weekdays or []),
+                        int(daily_episode_count or 0),
+                        int(interval_days or 0),
+                        int(latest_episode or 0),
+                        1 if is_completed else 0,
+                        (remark or '').strip(),
+                        resource_id,
+                        user_id,
+                    ))
+                self.conn.commit()
+                return updated
+            except Exception as e:
+                logger.error(f"更新资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def delete_resource(self, resource_id: int, user_id: int):
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "DELETE FROM resource_items WHERE resource_id = ? AND user_id = ?", (resource_id, user_id))
+                self._execute_sql(cursor, "DELETE FROM resource_links WHERE resource_id = ? AND user_id = ?", (resource_id, user_id))
+                self._execute_sql(cursor, "DELETE FROM resources WHERE id = ? AND user_id = ?", (resource_id, user_id))
+                deleted = cursor.rowcount > 0
+                self.conn.commit()
+                return deleted
+            except Exception as e:
+                logger.error(f"删除资源失败: {e}")
+                self.conn.rollback()
+                return False
 
     def list_resource_links(self, user_id: int, keyword: str = None, drive_type: str = None, resource_type: str = None):
         """获取卡密资源列表"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                sql = '''
-                SELECT rl.id, rl.resource_name, rl.resource_type, rl.drive_type, rl.resource_url, rl.created_at, rl.updated_at,
-                       (
-                           SELECT COUNT(*)
-                           FROM resource_link_items rli
-                           WHERE rli.resource_link_id = rl.id
-                       ) AS association_count
-                FROM resource_links rl
+                sql = f'''
+                {self._get_resource_link_select_sql()}
                 WHERE rl.user_id = ?
                 '''
                 params = [user_id]
@@ -3406,55 +4069,134 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, '''
-                SELECT id, resource_name, resource_type, drive_type, resource_url, created_at, updated_at
-                FROM resource_links
-                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
+                self._execute_sql(cursor, f'''
+                {self._get_resource_link_select_sql()}
+                WHERE rl.resource_name = ? AND rl.drive_type = ? AND rl.user_id = ?
                 ''', (resource_name.strip(), drive_type.strip(), user_id))
                 row = cursor.fetchone()
-                return self._serialize_resource_link_row(row) if row else None
+                return self._serialize_resource_link_row(row, cursor) if row else None
             except Exception as e:
                 logger.error(f"按唯一键获取卡密资源失败: {e}")
                 return None
 
-    def create_resource_link(self, resource_name: str, resource_type: str, drive_type: str, resource_url: str, user_id: int):
+    def _resolve_resource_reference(
+        self,
+        cursor,
+        user_id: int,
+        resource_id: int = None,
+        resource_name: str = None,
+    ) -> Dict[str, Any]:
+        if resource_id is not None:
+            self._execute_sql(cursor, '''
+            SELECT id, resource_name, resource_type, recommend_level, update_mode, update_weekdays,
+                   daily_episode_count, interval_days, latest_episode, is_completed, remark
+            FROM resources
+            WHERE id = ? AND user_id = ?
+            ''', (resource_id, user_id))
+        elif resource_name:
+            self._execute_sql(cursor, '''
+            SELECT id, resource_name, resource_type, recommend_level, update_mode, update_weekdays,
+                   daily_episode_count, interval_days, latest_episode, is_completed, remark
+            FROM resources
+            WHERE resource_name = ? AND user_id = ?
+            ''', (resource_name.strip(), user_id))
+        else:
+            raise ValueError("请先选择资源")
+
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("关联资源不存在，请先到资源管理中创建")
+
+        return {
+            'id': row[0],
+            'resource_name': row[1],
+            'resource_type': row[2] or '',
+            'recommend_level': int(row[3] or 0),
+            'update_mode': row[4] or '',
+            'update_weekdays': self._decode_resource_link_weekdays(row[5]),
+            'daily_episode_count': int(row[6] or 0),
+            'interval_days': int(row[7] or 0),
+            'latest_episode': int(row[8] or 0),
+            'is_completed': bool(row[9]),
+            'remark': row[10] or '',
+        }
+
+    def create_resource_link(
+        self,
+        drive_type: str,
+        resource_url: str,
+        user_id: int,
+        resource_id: int = None,
+        resource_name: str = None,
+    ):
         """创建卡密资源"""
         with self.lock:
             try:
-                resource_name = resource_name.strip()
-                resource_type = resource_type.strip()
                 drive_type = drive_type.strip()
                 resource_url = resource_url.strip()
 
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, '''
-                SELECT id FROM resource_links
-                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
-                ''', (resource_name, drive_type, user_id))
-                if cursor.fetchone():
-                    raise ValueError(f"资源已存在：{resource_name} / {drive_type}")
+                resource = self._resolve_resource_reference(
+                    cursor,
+                    user_id=user_id,
+                    resource_id=resource_id,
+                    resource_name=resource_name,
+                )
 
                 self._execute_sql(cursor, '''
-                INSERT INTO resource_links (resource_name, resource_type, drive_type, resource_url, user_id)
-                VALUES (?, ?, ?, ?, ?)
-                ''', (resource_name, resource_type, drive_type, resource_url, user_id))
-                self.conn.commit()
+                SELECT id FROM resource_links
+                WHERE resource_id = ? AND drive_type = ? AND user_id = ?
+                ''', (resource['id'], drive_type, user_id))
+                if cursor.fetchone():
+                    raise ValueError(f"卡密已存在：{resource['resource_name']} / {drive_type}")
+
+                self._execute_sql(cursor, '''
+                INSERT INTO resource_links (
+                    resource_id, resource_name, resource_type, drive_type, resource_url, recommend_level,
+                    update_mode, update_weekdays, daily_episode_count, interval_days, latest_episode,
+                    is_completed, remark, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    resource['id'],
+                    resource['resource_name'],
+                    resource['resource_type'],
+                    drive_type,
+                    resource_url,
+                    resource['recommend_level'],
+                    resource['update_mode'],
+                    self._encode_resource_link_weekdays(resource['update_weekdays']),
+                    resource['daily_episode_count'],
+                    resource['interval_days'],
+                    resource['latest_episode'],
+                    1 if resource['is_completed'] else 0,
+                    resource['remark'],
+                    user_id,
+                ))
                 link_id = cursor.lastrowid
-                logger.info(f"创建卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {link_id})")
+                self.conn.commit()
+                logger.info(f"创建卡密资源成功: {resource['resource_name']} / {drive_type} (ID: {link_id})")
                 return link_id
             except Exception as e:
                 logger.error(f"创建卡密资源失败: {e}")
                 self.conn.rollback()
                 raise
 
-    def update_resource_link(self, link_id: int, user_id: int, resource_name: str = None,
-                             resource_type: str = None, drive_type: str = None, resource_url: str = None):
+    def update_resource_link(
+        self,
+        link_id: int,
+        user_id: int,
+        resource_id: int = None,
+        drive_type: str = None,
+        resource_url: str = None,
+        resource_name: str = None,
+    ):
         """更新卡密资源"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 self._execute_sql(cursor, '''
-                SELECT resource_name, resource_type, drive_type, resource_url
+                SELECT resource_id, drive_type, resource_url
                 FROM resource_links
                 WHERE id = ? AND user_id = ?
                 ''', (link_id, user_id))
@@ -3462,68 +4204,84 @@ class DBManager:
                 if not current:
                     return False
 
-                next_resource_name = resource_name.strip() if resource_name is not None else current[0]
-                next_resource_type = resource_type.strip() if resource_type is not None else current[1]
-                next_drive_type = drive_type.strip() if drive_type is not None else current[2]
-                next_resource_url = resource_url.strip() if resource_url is not None else current[3]
-
-                if next_drive_type != current[2]:
-                    association_count = self._get_resource_link_association_count(cursor, link_id)
-                    if association_count > 0:
-                        raise ValueError("当前资源已关联商品，需先解除关联后才能修改网盘类型")
-
+                next_drive_type = drive_type.strip() if drive_type is not None else current[1]
+                next_resource_url = resource_url.strip() if resource_url is not None else current[2]
+                next_resource = self._resolve_resource_reference(
+                    cursor,
+                    user_id=user_id,
+                    resource_id=resource_id if resource_id is not None else current[0],
+                    resource_name=resource_name if resource_id is None else None,
+                )
                 self._execute_sql(cursor, '''
                 SELECT id FROM resource_links
-                WHERE resource_name = ? AND drive_type = ? AND user_id = ? AND id != ?
-                ''', (next_resource_name, next_drive_type, user_id, link_id))
+                WHERE resource_id = ? AND drive_type = ? AND user_id = ? AND id != ?
+                ''', (next_resource['id'], next_drive_type, user_id, link_id))
                 if cursor.fetchone():
-                    raise ValueError(f"资源已存在：{next_resource_name} / {next_drive_type}")
+                    raise ValueError(f"卡密已存在：{next_resource['resource_name']} / {next_drive_type}")
 
                 self._execute_sql(cursor, '''
                 UPDATE resource_links
-                SET resource_name = ?, resource_type = ?, drive_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                SET resource_id = ?, resource_name = ?, resource_type = ?, drive_type = ?, resource_url = ?,
+                    recommend_level = ?, update_mode = ?, update_weekdays = ?, daily_episode_count = ?,
+                    interval_days = ?, latest_episode = ?, is_completed = ?, remark = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-                ''', (next_resource_name, next_resource_type, next_drive_type, next_resource_url, link_id, user_id))
+                ''', (
+                    next_resource['id'],
+                    next_resource['resource_name'],
+                    next_resource['resource_type'],
+                    next_drive_type,
+                    next_resource_url,
+                    next_resource['recommend_level'],
+                    next_resource['update_mode'],
+                    self._encode_resource_link_weekdays(next_resource['update_weekdays']),
+                    next_resource['daily_episode_count'],
+                    next_resource['interval_days'],
+                    next_resource['latest_episode'],
+                    1 if next_resource['is_completed'] else 0,
+                    next_resource['remark'],
+                    link_id,
+                    user_id,
+                ))
+                updated_current_row = cursor.rowcount > 0
                 self.conn.commit()
                 logger.info(f"更新卡密资源成功: ID {link_id}")
-                return cursor.rowcount > 0
+                return updated_current_row
             except Exception as e:
                 logger.error(f"更新卡密资源失败: {e}")
                 self.conn.rollback()
                 raise
 
-    def get_resource_link_items(self, link_id: int, user_id: int):
+    def get_resource_items(self, resource_id: int, user_id: int):
         """获取资源的商品关联候选列表"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                resource_row = self._get_resource_link_core(cursor, link_id, user_id)
+                resource_row = self._get_resource_core(cursor, resource_id, user_id)
                 if not resource_row:
                     return None
 
-                resource = self._serialize_resource_link_row(resource_row, cursor)
-                drive_type = resource['drive_type']
+                resource = self._serialize_resource_row(resource_row, cursor)
 
                 self._execute_sql(cursor, '''
                 SELECT i.id, i.cookie_id, i.item_id, i.item_title, i.item_price, i.updated_at,
-                       rli.resource_link_id AS associated_resource_id,
-                       rl.resource_name AS associated_resource_name
+                       ri.resource_id AS associated_resource_id,
+                       r.resource_name AS associated_resource_name
                 FROM item_info i
                 INNER JOIN cookies c ON c.id = i.cookie_id
-                LEFT JOIN resource_link_items rli
-                    ON rli.item_info_id = i.id
-                   AND rli.user_id = ?
-                   AND rli.drive_type = ?
-                LEFT JOIN resource_links rl ON rl.id = rli.resource_link_id
+                LEFT JOIN resource_items ri
+                    ON ri.item_info_id = i.id
+                   AND ri.user_id = ?
+                LEFT JOIN resources r ON r.id = ri.resource_id
                 WHERE c.user_id = ?
                 ORDER BY i.updated_at DESC, i.id DESC
-                ''', (user_id, drive_type, user_id))
+                ''', (user_id, user_id))
 
                 items = []
                 for row in cursor.fetchall():
                     associated_resource_id = row[6]
                     association_status = 'none'
-                    if associated_resource_id == link_id:
+                    if associated_resource_id == resource_id:
                         association_status = 'current'
                     elif associated_resource_id:
                         association_status = 'other'
@@ -3550,16 +4308,28 @@ class DBManager:
                 logger.error(f"获取资源关联商品列表失败: {e}")
                 return None
 
-    def update_resource_link_items(self, link_id: int, user_id: int, item_info_ids: List[int]):
-        """更新资源关联商品"""
+    def get_resource_link_items(self, link_id: int, user_id: int):
+        """获取资源的商品关联候选列表"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 resource_row = self._get_resource_link_core(cursor, link_id, user_id)
                 if not resource_row:
                     return None
+                return self.get_resource_items(resource_row[1], user_id)
+            except Exception as e:
+                logger.error(f"获取资源关联商品列表失败: {e}")
+                return None
 
-                drive_type = resource_row[3]
+    def update_resource_items(self, resource_id: int, user_id: int, item_info_ids: List[int]):
+        """更新资源关联商品"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                resource_row = self._get_resource_core(cursor, resource_id, user_id)
+                if not resource_row:
+                    return None
+
                 normalized_ids = []
                 for item_info_id in item_info_ids or []:
                     normalized_id = int(item_info_id)
@@ -3579,7 +4349,6 @@ class DBManager:
                     WHERE c.user_id = ? AND i.id IN ({placeholders})
                     ''', (user_id, *normalized_ids))
                     valid_item_ids = [row[0] for row in cursor.fetchall()]
-
                     if len(valid_item_ids) != len(normalized_ids):
                         raise ValueError("部分商品不存在或无权限关联")
 
@@ -3587,19 +4356,19 @@ class DBManager:
 
                 self._execute_sql(cursor, '''
                 SELECT item_info_id
-                FROM resource_link_items
-                WHERE resource_link_id = ? AND user_id = ?
-                ''', (link_id, user_id))
-                current_rows = cursor.fetchall()
-                current_item_id = current_rows[0][0] if current_rows else None
+                FROM resource_items
+                WHERE resource_id = ? AND user_id = ?
+                ''', (resource_id, user_id))
+                current_row = cursor.fetchone()
+                current_item_id = current_row[0] if current_row else None
 
                 replacement_item_id = None
                 if selected_item_id is not None:
                     self._execute_sql(cursor, '''
                     SELECT item_info_id
-                    FROM resource_link_items
-                    WHERE user_id = ? AND drive_type = ? AND resource_link_id != ? AND item_info_id = ?
-                    ''', (user_id, drive_type, link_id, selected_item_id))
+                    FROM resource_items
+                    WHERE user_id = ? AND resource_id != ? AND item_info_id = ?
+                    ''', (user_id, resource_id, selected_item_id))
                     replacement_row = cursor.fetchone()
                     replacement_item_id = replacement_row[0] if replacement_row else None
 
@@ -3611,27 +4380,23 @@ class DBManager:
 
                 if replacement_item_id is not None:
                     self._execute_sql(cursor, '''
-                    DELETE FROM resource_link_items
-                    WHERE user_id = ? AND drive_type = ? AND item_info_id = ?
-                    ''', (user_id, drive_type, replacement_item_id))
+                    DELETE FROM resource_items
+                    WHERE user_id = ? AND item_info_id = ?
+                    ''', (user_id, replacement_item_id))
 
                 if current_item_id is not None and current_item_id != selected_item_id:
                     self._execute_sql(cursor, '''
-                    DELETE FROM resource_link_items
-                    WHERE resource_link_id = ? AND user_id = ? AND item_info_id = ?
-                    ''', (link_id, user_id, current_item_id))
+                    DELETE FROM resource_items
+                    WHERE resource_id = ? AND user_id = ? AND item_info_id = ?
+                    ''', (resource_id, user_id, current_item_id))
 
                 if selected_item_id is not None and current_item_id != selected_item_id:
                     self._execute_sql(cursor, '''
-                    INSERT INTO resource_link_items (resource_link_id, item_info_id, user_id, drive_type)
-                    VALUES (?, ?, ?, ?)
-                    ''', (link_id, selected_item_id, user_id, drive_type))
+                    INSERT INTO resource_items (resource_id, item_info_id, user_id)
+                    VALUES (?, ?, ?)
+                    ''', (resource_id, selected_item_id, user_id))
 
                 self.conn.commit()
-                logger.info(
-                    f"更新资源关联商品成功: resource_link_id={link_id}, user_id={user_id}, "
-                    f"added={added_count}, replaced={replaced_count}, removed={removed_count}"
-                )
                 return {
                     'added_count': added_count,
                     'replaced_count': replaced_count,
@@ -3643,18 +4408,33 @@ class DBManager:
                 self.conn.rollback()
                 raise
 
+    def update_resource_link_items(self, link_id: int, user_id: int, item_info_ids: List[int]):
+        """更新资源关联商品"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                resource_row = self._get_resource_link_core(cursor, link_id, user_id)
+                if not resource_row:
+                    return None
+                return self.update_resource_items(resource_row[1], user_id, item_info_ids)
+            except Exception as e:
+                logger.error(f"更新资源关联商品失败: {e}")
+                self.conn.rollback()
+                raise
+
     def get_resource_links_for_delivery_item(self, cookie_id: str, item_id: str, user_id: int):
         """获取商品已关联的资源链接，供自动发货使用"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 self._execute_sql(cursor, '''
-                SELECT rl.id, rl.resource_name, rl.drive_type, rl.resource_url, rl.updated_at
+                SELECT rl.id, r.resource_name, rl.drive_type, rl.resource_url, rl.updated_at
                 FROM item_info i
                 INNER JOIN cookies c ON c.id = i.cookie_id
-                INNER JOIN resource_link_items rli ON rli.item_info_id = i.id
-                INNER JOIN resource_links rl ON rl.id = rli.resource_link_id
-                WHERE i.cookie_id = ? AND i.item_id = ? AND c.user_id = ? AND rl.user_id = ?
+                INNER JOIN resource_items ri ON ri.item_info_id = i.id
+                INNER JOIN resources r ON r.id = ri.resource_id
+                INNER JOIN resource_links rl ON rl.resource_id = r.id
+                WHERE i.cookie_id = ? AND i.item_id = ? AND c.user_id = ? AND rl.user_id = ? AND r.user_id = ?
                 ORDER BY
                     CASE rl.drive_type
                         WHEN 'baidu' THEN 0
@@ -3663,7 +4443,7 @@ class DBManager:
                     END,
                     rl.updated_at DESC,
                     rl.id DESC
-                ''', (cookie_id, item_id, user_id, user_id))
+                ''', (cookie_id, item_id, user_id, user_id, user_id))
 
                 links = []
                 for row in cursor.fetchall():
@@ -3679,39 +4459,87 @@ class DBManager:
                 logger.error(f"获取商品关联资源链接失败: cookie_id={cookie_id}, item_id={item_id}, error={e}")
                 return []
 
-    def upsert_resource_link(self, resource_name: str, resource_type: str, drive_type: str, resource_url: str, user_id: int):
+    def upsert_resource_link(
+        self,
+        drive_type: str,
+        resource_url: str,
+        user_id: int,
+        resource_id: int = None,
+        resource_name: str = None,
+    ):
         """按资源名称+网盘类型创建或更新卡密资源"""
         with self.lock:
             try:
-                resource_name = resource_name.strip()
-                resource_type = resource_type.strip()
                 drive_type = drive_type.strip()
                 resource_url = resource_url.strip()
 
                 cursor = self.conn.cursor()
+                resource = self._resolve_resource_reference(
+                    cursor,
+                    user_id=user_id,
+                    resource_id=resource_id,
+                    resource_name=resource_name,
+                )
+
                 self._execute_sql(cursor, '''
                 SELECT id, resource_url
                 FROM resource_links
-                WHERE resource_name = ? AND drive_type = ? AND user_id = ?
-                ''', (resource_name, drive_type, user_id))
+                WHERE resource_id = ? AND drive_type = ? AND user_id = ?
+                ''', (resource['id'], drive_type, user_id))
                 existing = cursor.fetchone()
 
                 if existing:
                     self._execute_sql(cursor, '''
                     UPDATE resource_links
-                    SET resource_type = ?, resource_url = ?, updated_at = CURRENT_TIMESTAMP
+                    SET resource_id = ?, resource_name = ?, resource_type = ?, resource_url = ?, recommend_level = ?, update_mode = ?,
+                        update_weekdays = ?, daily_episode_count = ?, interval_days = ?, latest_episode = ?,
+                        is_completed = ?, remark = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND user_id = ?
-                    ''', (resource_type, resource_url, existing[0], user_id))
+                    ''', (
+                        resource['id'],
+                        resource['resource_name'],
+                        resource['resource_type'],
+                        resource_url,
+                        resource['recommend_level'],
+                        resource['update_mode'],
+                        self._encode_resource_link_weekdays(resource['update_weekdays']),
+                        resource['daily_episode_count'],
+                        resource['interval_days'],
+                        resource['latest_episode'],
+                        1 if resource['is_completed'] else 0,
+                        resource['remark'],
+                        existing[0],
+                        user_id,
+                    ))
                     self.conn.commit()
-                    logger.info(f"更新卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {existing[0]})")
+                    logger.info(f"更新卡密资源成功: {resource['resource_name']} / {drive_type} (ID: {existing[0]})")
                     return {'id': existing[0], 'action': 'updated'}
 
                 self._execute_sql(cursor, '''
-                INSERT INTO resource_links (resource_name, resource_type, drive_type, resource_url, user_id)
-                VALUES (?, ?, ?, ?, ?)
-                ''', (resource_name, resource_type, drive_type, resource_url, user_id))
+                INSERT INTO resource_links (
+                    resource_id, resource_name, resource_type, drive_type, resource_url, recommend_level,
+                    update_mode, update_weekdays, daily_episode_count, interval_days, latest_episode,
+                    is_completed, remark, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    resource['id'],
+                    resource['resource_name'],
+                    resource['resource_type'],
+                    drive_type,
+                    resource_url,
+                    resource['recommend_level'],
+                    resource['update_mode'],
+                    self._encode_resource_link_weekdays(resource['update_weekdays']),
+                    resource['daily_episode_count'],
+                    resource['interval_days'],
+                    resource['latest_episode'],
+                    1 if resource['is_completed'] else 0,
+                    resource['remark'],
+                    user_id,
+                ))
                 self.conn.commit()
-                logger.info(f"创建卡密资源成功: {resource_name} / {resource_type} / {drive_type} (ID: {cursor.lastrowid})")
+                logger.info(f"创建卡密资源成功: {resource['resource_name']} / {drive_type} (ID: {cursor.lastrowid})")
                 return {'id': cursor.lastrowid, 'action': 'created'}
             except Exception as e:
                 logger.error(f"导入卡密资源失败: {e}")
@@ -5757,6 +6585,8 @@ class DBManager:
                     'ai_conversations': 'id',
                     'ai_item_cache': 'id',
                     'item_info': 'id',
+                    'resources': 'id',
+                    'resource_items': 'id',
                     'resource_links': 'id',
                     'resource_link_items': 'id',
                     'message_notifications': 'id',
@@ -5772,9 +6602,19 @@ class DBManager:
 
                 primary_key = primary_key_map.get(table_name, 'id')
 
-                if table_name == 'resource_links':
+                if table_name == 'resources':
+                    cursor.execute("DELETE FROM resource_items WHERE resource_id = ?", (record_id,))
+                    cursor.execute(
+                        "DELETE FROM resource_link_items WHERE resource_link_id IN (SELECT id FROM resource_links WHERE resource_id = ?)",
+                        (record_id,)
+                    )
+                    cursor.execute("DELETE FROM resource_links WHERE resource_id = ?", (record_id,))
+                elif table_name == 'resource_links':
                     cursor.execute("DELETE FROM resource_link_items WHERE resource_link_id = ?", (record_id,))
+                elif table_name == 'resource_items':
+                    pass
                 elif table_name == 'item_info':
+                    cursor.execute("DELETE FROM resource_items WHERE item_info_id = ?", (record_id,))
                     cursor.execute("DELETE FROM resource_link_items WHERE item_info_id = ?", (record_id,))
 
                 # 删除记录
@@ -5799,10 +6639,22 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
 
-                if table_name == 'resource_links':
+                if table_name == 'resources':
+                    cursor.execute("DELETE FROM resource_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_items'")
                     cursor.execute("DELETE FROM resource_link_items")
                     cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_link_items'")
+                    cursor.execute("DELETE FROM resource_links")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_links'")
+                elif table_name == 'resource_links':
+                    cursor.execute("DELETE FROM resource_link_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_link_items'")
+                elif table_name == 'resource_items':
+                    cursor.execute("DELETE FROM resource_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_items'")
                 elif table_name == 'item_info':
+                    cursor.execute("DELETE FROM resource_items")
+                    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_items'")
                     cursor.execute("DELETE FROM resource_link_items")
                     cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'resource_link_items'")
 

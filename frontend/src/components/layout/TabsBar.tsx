@@ -29,6 +29,7 @@ const routeTitles: Record<string, string> = {
   '/items': '商品管理',
   '/keywords': '自动回复',
   '/item-replies': '指定商品回复',
+  '/resources': '资源管理',
   '/resource-links': '卡密管理',
   '/orders': '订单管理',
   '/cards': '卡券管理',

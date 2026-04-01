@@ -1,29 +1,36 @@
-import request, { get, post, put, del } from '@/utils/request'
+import request, { del, get, post, put } from '@/utils/request'
 
 export interface ResourceLinkData {
   id?: number
+  resource_id?: number
   resource_name: string
   resource_type: string
   drive_type: string
   resource_url: string
+  recommend_level?: number
+  update_mode?: '' | 'daily' | 'weekly' | 'interval'
+  update_weekdays?: number[]
+  daily_episode_count?: number
+  interval_days?: number
+  latest_episode?: number
+  is_completed?: boolean
+  remark?: string
   association_count?: number
-  associated_items?: ResourceLinkAssociatedItemPreview[]
   created_at?: string
   updated_at?: string
 }
 
-export interface ResourceLinkAssociatedItemPreview {
-  item_info_id: number
-  cookie_id: string
-  item_id: string
-  item_title: string
+export interface ResourceLinkPayload {
+  resource_id?: number
+  resource_name?: string
+  drive_type: string
+  resource_url: string
 }
 
 export interface ResourceLinkImportDuplicate {
   id: number
   resource_name: string
   resource_type?: string
-  new_resource_type?: string
   drive_type: string
   drive_type_label: string
   existing_url: string
@@ -48,32 +55,6 @@ export interface ResourceLinkImportResponse {
   parsed_count?: number
 }
 
-export interface ResourceLinkAssociationItem {
-  id: number
-  cookie_id: string
-  item_id: string
-  item_title?: string
-  display_title: string
-  item_price?: string
-  updated_at?: string
-  association_status: 'none' | 'current' | 'other'
-  associated_resource_id?: number
-  associated_resource_name?: string
-}
-
-export interface ResourceLinkAssociationResponse {
-  resource: ResourceLinkData
-  items: ResourceLinkAssociationItem[]
-}
-
-export interface ResourceLinkAssociationUpdateResponse {
-  message: string
-  added_count: number
-  replaced_count: number
-  removed_count: number
-  total_selected: number
-}
-
 export const getResourceLinks = async (params?: {
   keyword?: string
   drive_type?: string
@@ -84,14 +65,14 @@ export const getResourceLinks = async (params?: {
 }
 
 export const createResourceLink = (
-  data: Omit<ResourceLinkData, 'id' | 'created_at' | 'updated_at'>
+  data: ResourceLinkPayload
 ): Promise<{ id: number; message: string }> => {
   return post('/resource-links', data)
 }
 
 export const updateResourceLink = (
   linkId: string,
-  data: Omit<ResourceLinkData, 'id' | 'created_at' | 'updated_at'>
+  data: ResourceLinkPayload
 ): Promise<{ message: string }> => {
   return put(`/resource-links/${linkId}`, data)
 }
@@ -102,7 +83,6 @@ export const deleteResourceLink = (linkId: string): Promise<{ message: string }>
 
 export const importResourceLinks = (data: {
   resource_name: string
-  resource_type: string
   content: string
   confirm_update?: boolean
 }): Promise<ResourceLinkImportResponse> => {
@@ -132,15 +112,4 @@ export const exportResourceLinksDocument = async (params?: {
     params,
   })
   return response.data
-}
-
-export const getResourceLinkItemAssociations = (linkId: string): Promise<ResourceLinkAssociationResponse> => {
-  return get(`/resource-links/${linkId}/item-associations`)
-}
-
-export const updateResourceLinkItemAssociations = (
-  linkId: string,
-  itemIds: number[]
-): Promise<ResourceLinkAssociationUpdateResponse> => {
-  return put(`/resource-links/${linkId}/item-associations`, { item_ids: itemIds })
 }
