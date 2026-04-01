@@ -14,6 +14,27 @@ interface BackendChannel {
   updated_at?: string
 }
 
+const normalizeChannelType = (type: string): NotificationChannel['type'] => {
+  const normalized = String(type || '').trim().toLowerCase()
+
+  switch (normalized) {
+    case 'ding_talk':
+    case 'dingtalk':
+      return 'dingtalk'
+    case 'lark':
+    case 'feishu':
+      return 'feishu'
+    case 'bark':
+    case 'email':
+    case 'webhook':
+    case 'wechat':
+    case 'telegram':
+      return normalized
+    default:
+      return 'webhook'
+  }
+}
+
 // 将前端的 config 对象/字符串序列化为后端需要的字符串格式
 const serializeChannelConfig = (config: NotificationChannel['config'] | unknown): string => {
   if (typeof config === 'string') {
@@ -52,7 +73,7 @@ export const getNotificationChannels = async (): Promise<{ success: boolean; dat
     return {
       id: String(item.id),
       name: item.name,
-      type: item.type as NotificationChannel['type'],
+      type: normalizeChannelType(item.type),
       config: parsedConfig,
       enabled: item.enabled,
       created_at: item.created_at,
@@ -90,10 +111,35 @@ export const deleteNotificationChannel = (channelId: string): Promise<ApiRespons
   return del(`/notification-channels/${channelId}`)
 }
 
-// 测试通知渠道 - 后端暂未实现此接口
-export const testNotificationChannel = async (_channelId: string): Promise<ApiResponse> => {
-  // TODO: 后端暂未实现 POST /notification-channels/{id}/test 接口
-  return { success: false, message: '通知渠道测试功能暂未实现' }
+// 测试通知渠道
+export const testNotificationChannel = async (channelId: string): Promise<ApiResponse> => {
+  try {
+    const response = await post<ApiResponse>(`/notification-channels/${channelId}/test`)
+    return {
+      success: response.success ?? true,
+      message: response.message || response.msg || '测试消息发送成功',
+      data: response.data,
+      msg: response.msg,
+      detail: response.detail,
+    }
+  } catch (error) {
+    const maybeError = error as {
+      response?: {
+        data?: {
+          detail?: string
+          message?: string
+        }
+      }
+    }
+
+    return {
+      success: false,
+      message:
+        maybeError.response?.data?.detail ||
+        maybeError.response?.data?.message ||
+        '测试消息发送失败',
+    }
+  }
 }
 
 // ========== 消息通知 ==========

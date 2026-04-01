@@ -2360,6 +2360,345 @@ class MessageNotificationIn(BaseModel):
     enabled: bool = True
 
 
+NOTIFICATION_CHANNEL_TYPE_LABELS = {
+    'qq': 'QQ通知',
+    'ding_talk': '钉钉通知',
+    'dingtalk': '钉钉通知',
+    'feishu': '飞书通知',
+    'lark': '飞书通知',
+    'bark': 'Bark通知',
+    'email': '邮件通知',
+    'webhook': 'Webhook通知',
+    'wechat': '微信通知',
+    'telegram': 'Telegram通知',
+}
+
+
+def normalize_notification_channel_type(channel_type: str) -> str:
+    mapping = {
+        'ding_talk': 'dingtalk',
+        'dingding': 'dingtalk',
+        'dingtalk': 'dingtalk',
+        'feishu': 'feishu',
+        'lark': 'feishu',
+        'bark': 'bark',
+        'email': 'email',
+        'webhook': 'webhook',
+        'wechat': 'wechat',
+        'telegram': 'telegram',
+        'qq': 'qq',
+    }
+    return mapping.get(str(channel_type or '').strip().lower(), str(channel_type or '').strip().lower())
+
+
+def parse_notification_channel_config(config_value: Any) -> Dict[str, Any]:
+    if isinstance(config_value, dict):
+        return config_value
+
+    raw_config = str(config_value or '').strip()
+    if not raw_config:
+        return {}
+
+    try:
+        parsed_config = json.loads(raw_config)
+    except json.JSONDecodeError as exc:
+        raise ValueError("通知渠道配置必须是合法的 JSON 对象") from exc
+
+    if not isinstance(parsed_config, dict):
+        raise ValueError("通知渠道配置必须是 JSON 对象")
+
+    return parsed_config
+
+
+def build_notification_channel_test_content(channel_name: str, channel_type: str) -> Tuple[str, str]:
+    channel_type_label = NOTIFICATION_CHANNEL_TYPE_LABELS.get(channel_type, channel_type or '通知渠道')
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    title = "闲鱼自动回复通知渠道测试"
+    message = (
+        f"{title}\n\n"
+        f"渠道名称：{channel_name}\n"
+        f"渠道类型：{channel_type_label}\n"
+        f"测试时间：{current_time}\n\n"
+        f"如果你收到这条消息，说明当前通知渠道配置正常。"
+    )
+    return title, message
+
+
+def send_dingtalk_notification_sync(config_data: Dict[str, Any], title: str, message: str) -> None:
+    import base64
+    import hmac
+    import requests
+
+    webhook_url = str(config_data.get('webhook_url') or config_data.get('config') or '').strip()
+    secret = str(config_data.get('secret') or '').strip()
+
+    if not webhook_url:
+        raise ValueError("请先配置钉钉机器人 Webhook URL")
+
+    if secret:
+        timestamp = str(round(time.time() * 1000))
+        string_to_sign = f'{timestamp}\n{secret}'
+        sign = base64.b64encode(
+            hmac.new(secret.encode('utf-8'), string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
+        ).decode('utf-8')
+        webhook_url = f'{webhook_url}&timestamp={timestamp}&sign={quote(sign, safe="")}'
+
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": title,
+            "text": f"## {title}\n\n{message.replace(chr(10), chr(10) * 2)}"
+        }
+    }
+
+    response = requests.post(webhook_url, json=payload, timeout=10)
+    if response.status_code != 200:
+        raise ValueError(f"钉钉返回 HTTP {response.status_code}: {response.text}")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        return
+
+    if int(response_data.get('errcode', 0)) != 0:
+        raise ValueError(response_data.get('errmsg') or '钉钉通知发送失败')
+
+
+def send_feishu_notification_sync(config_data: Dict[str, Any], _: str, message: str) -> None:
+    import base64
+    import hmac
+    import requests
+
+    webhook_url = str(config_data.get('webhook_url') or '').strip()
+    secret = str(config_data.get('secret') or '').strip()
+
+    if not webhook_url:
+        raise ValueError("请先配置飞书机器人 Webhook URL")
+
+    timestamp = str(int(time.time()))
+    payload: Dict[str, Any] = {
+        "msg_type": "text",
+        "content": {
+            "text": message
+        }
+    }
+
+    if secret:
+        string_to_sign = f'{timestamp}\n{secret}'
+        payload["timestamp"] = timestamp
+        payload["sign"] = base64.b64encode(
+            hmac.new(string_to_sign.encode('utf-8'), b'', digestmod=hashlib.sha256).digest()
+        ).decode('utf-8')
+
+    response = requests.post(webhook_url, json=payload, timeout=10)
+    if response.status_code != 200:
+        raise ValueError(f"飞书返回 HTTP {response.status_code}: {response.text}")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        return
+
+    if response_data.get('code') not in (None, 0):
+        raise ValueError(response_data.get('msg') or '飞书通知发送失败')
+
+
+def send_bark_notification_sync(config_data: Dict[str, Any], title: str, message: str) -> None:
+    import requests
+
+    server_url = str(config_data.get('server_url') or 'https://api.day.app').strip().rstrip('/')
+    device_key = str(config_data.get('device_key') or '').strip()
+
+    if not device_key:
+        raise ValueError("请先配置 Bark 设备密钥")
+
+    payload: Dict[str, Any] = {
+        "device_key": device_key,
+        "title": str(config_data.get('title') or title).strip() or title,
+        "body": message,
+        "sound": str(config_data.get('sound') or 'default').strip() or 'default',
+        "group": str(config_data.get('group') or 'xianyu').strip() or 'xianyu',
+    }
+
+    icon = str(config_data.get('icon') or '').strip()
+    url = str(config_data.get('url') or '').strip()
+    if icon:
+        payload["icon"] = icon
+    if url:
+        payload["url"] = url
+
+    response = requests.post(f'{server_url}/push', json=payload, timeout=10)
+    if response.status_code != 200:
+        raise ValueError(f"Bark 返回 HTTP {response.status_code}: {response.text}")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        return
+
+    if int(response_data.get('code', 200)) != 200:
+        raise ValueError(response_data.get('message') or 'Bark 通知发送失败')
+
+
+def send_email_notification_sync(config_data: Dict[str, Any], title: str, message: str) -> None:
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    smtp_server = str(config_data.get('smtp_server') or '').strip()
+    smtp_port = int(config_data.get('smtp_port') or 587)
+    email_user = str(config_data.get('email_user') or '').strip()
+    email_password = str(config_data.get('email_password') or '').strip()
+    recipient_email = str(config_data.get('recipient_email') or '').strip()
+    smtp_from = str(config_data.get('smtp_from') or email_user).strip() or email_user
+    smtp_use_ssl = bool(config_data.get('smtp_use_ssl', smtp_port == 465))
+    smtp_use_tls = bool(config_data.get('smtp_use_tls', smtp_port == 587))
+
+    if not all([smtp_server, email_user, email_password, recipient_email]):
+        raise ValueError("请完整填写 SMTP 服务器、端口、发件邮箱、密码和接收邮箱")
+
+    email_message = MIMEMultipart()
+    email_message['From'] = smtp_from
+    email_message['To'] = recipient_email
+    email_message['Subject'] = title
+    email_message.attach(MIMEText(message, 'plain', 'utf-8'))
+
+    server = None
+    try:
+        if smtp_use_ssl:
+            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+        else:
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+            if smtp_use_tls:
+                server.starttls()
+
+        server.login(email_user, email_password)
+        server.send_message(email_message)
+    finally:
+        if server:
+            try:
+                server.quit()
+            except Exception:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+
+
+def send_webhook_notification_sync(config_data: Dict[str, Any], title: str, message: str) -> None:
+    import requests
+
+    webhook_url = str(config_data.get('webhook_url') or '').strip()
+    http_method = str(config_data.get('http_method') or 'POST').strip().upper()
+    raw_headers = config_data.get('headers', {})
+
+    if not webhook_url:
+        raise ValueError("请先配置 Webhook URL")
+
+    if isinstance(raw_headers, str):
+        try:
+            custom_headers = json.loads(raw_headers) if raw_headers.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise ValueError("Webhook 请求头必须是合法 JSON") from exc
+    elif isinstance(raw_headers, dict):
+        custom_headers = raw_headers
+    else:
+        custom_headers = {}
+
+    headers = {'Content-Type': 'application/json'}
+    headers.update({str(key): str(value) for key, value in custom_headers.items()})
+
+    payload = {
+        'title': title,
+        'message': message,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'source': 'xianyu-auto-reply',
+        'type': 'test_notification',
+    }
+
+    response = requests.request(http_method, webhook_url, json=payload, headers=headers, timeout=10)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(f"Webhook 返回 HTTP {response.status_code}: {response.text}")
+
+
+def send_wechat_notification_sync(config_data: Dict[str, Any], _: str, message: str) -> None:
+    import requests
+
+    webhook_url = str(config_data.get('webhook_url') or '').strip()
+    if not webhook_url:
+        raise ValueError("请先配置企业微信机器人 Webhook URL")
+
+    payload = {
+        "msgtype": "text",
+        "text": {
+            "content": message
+        }
+    }
+
+    response = requests.post(webhook_url, json=payload, timeout=10)
+    if response.status_code != 200:
+        raise ValueError(f"企业微信返回 HTTP {response.status_code}: {response.text}")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        return
+
+    if int(response_data.get('errcode', 0)) != 0:
+        raise ValueError(response_data.get('errmsg') or '企业微信通知发送失败')
+
+
+def send_telegram_notification_sync(config_data: Dict[str, Any], _: str, message: str) -> None:
+    import requests
+
+    bot_token = str(config_data.get('bot_token') or '').strip()
+    chat_id = str(config_data.get('chat_id') or '').strip()
+
+    if not all([bot_token, chat_id]):
+        raise ValueError("请先配置 Telegram Bot Token 和 Chat ID")
+
+    response = requests.post(
+        f'https://api.telegram.org/bot{bot_token}/sendMessage',
+        json={
+            'chat_id': chat_id,
+            'text': message,
+        },
+        timeout=10,
+    )
+    if response.status_code != 200:
+        raise ValueError(f"Telegram 返回 HTTP {response.status_code}: {response.text}")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        return
+
+    if response_data.get('ok') is False:
+        raise ValueError((response_data.get('description') or 'Telegram 通知发送失败').strip())
+
+
+def send_notification_channel_test_message(channel_type: str, config_data: Dict[str, Any], title: str, message: str) -> None:
+    normalized_channel_type = normalize_notification_channel_type(channel_type)
+
+    match normalized_channel_type:
+        case 'dingtalk':
+            send_dingtalk_notification_sync(config_data, title, message)
+        case 'feishu':
+            send_feishu_notification_sync(config_data, title, message)
+        case 'bark':
+            send_bark_notification_sync(config_data, title, message)
+        case 'email':
+            send_email_notification_sync(config_data, title, message)
+        case 'webhook':
+            send_webhook_notification_sync(config_data, title, message)
+        case 'wechat':
+            send_wechat_notification_sync(config_data, title, message)
+        case 'telegram':
+            send_telegram_notification_sync(config_data, title, message)
+        case _:
+            raise ValueError(f"暂不支持 {NOTIFICATION_CHANNEL_TYPE_LABELS.get(channel_type, channel_type or '该渠道')} 的测试发送")
+
+
 class SystemSettingIn(BaseModel):
     value: str
     description: Optional[str] = None
@@ -4071,6 +4410,42 @@ def delete_notification_channel(channel_id: int, _: None = Depends(require_auth)
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/notification-channels/{channel_id}/test')
+def test_notification_channel(channel_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """测试通知渠道"""
+    from db_manager import db_manager
+
+    try:
+        user_channels = db_manager.get_notification_channels(current_user['user_id'])
+        channel = next((item for item in user_channels if int(item.get('id') or 0) == channel_id), None)
+        if not channel:
+            raise HTTPException(status_code=404, detail='通知渠道不存在')
+
+        channel_type = str(channel.get('type') or '').strip()
+        channel_name = str(channel.get('name') or '').strip() or NOTIFICATION_CHANNEL_TYPE_LABELS.get(channel_type, '通知渠道')
+        config_data = parse_notification_channel_config(channel.get('config'))
+        title, message = build_notification_channel_test_content(
+            channel_name,
+            normalize_notification_channel_type(channel_type),
+        )
+
+        send_notification_channel_test_message(channel_type, config_data, title, message)
+
+        log_with_user('info', f"通知渠道测试发送成功: {channel_name}({channel_type})", current_user)
+        return {
+            'success': True,
+            'message': f'{NOTIFICATION_CHANNEL_TYPE_LABELS.get(channel_type, channel_type or "通知渠道")}测试消息发送成功'
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        log_with_user('warning', f"通知渠道测试发送失败: {str(e)}", current_user)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log_with_user('error', f"通知渠道测试异常: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail='测试通知发送失败，请稍后重试')
 
 
 # ------------------------- 消息通知配置接口 -------------------------

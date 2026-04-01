@@ -10,8 +10,8 @@ import type { NotificationChannel } from '@/types'
 
 // 所有支持的渠道类型配置
 const channelTypes = [
-  { type: 'dingtalk', label: '钉钉通知', desc: '钉钉机器人消息', icon: Bell, placeholder: '{"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=..."}' },
-  { type: 'feishu', label: '飞书通知', desc: '飞书机器人消息', icon: Send, placeholder: '{"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/..."}' },
+  { type: 'dingtalk', label: '钉钉通知', desc: '钉钉机器人消息', icon: Bell, placeholder: '{"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=...", "secret": "SEC..."}' },
+  { type: 'feishu', label: '飞书通知', desc: '飞书机器人消息', icon: Send, placeholder: '{"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/...", "secret": "..." }' },
   { type: 'bark', label: 'Bark通知', desc: 'iOS推送通知', icon: Smartphone, placeholder: '{"device_key": "xxx", "server_url": "https://api.day.app"}' },
   { type: 'email', label: '邮件通知', desc: 'SMTP邮件发送', icon: Mail, placeholder: '{"smtp_server": "...", "smtp_port": 587, "email_user": "...", "email_password": "...", "recipient_email": "..."}' },
   { type: 'webhook', label: 'Webhook', desc: '自定义HTTP请求', icon: Link, placeholder: '{"webhook_url": "https://..."}' },
@@ -37,6 +37,7 @@ export function NotificationChannels() {
   const [formConfig, setFormConfig] = useState('')
   const [formEnabled, setFormEnabled] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [testingChannelId, setTestingChannelId] = useState<string | null>(null)
 
   const loadChannels = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -93,14 +94,17 @@ export function NotificationChannels() {
 
   const handleTest = async (id: string) => {
     try {
+      setTestingChannelId(id)
       const result = await testNotificationChannel(id)
       if (result.success) {
-        addToast({ type: 'success', message: '测试消息发送成功' })
+        addToast({ type: 'success', message: result.message || '测试消息发送成功' })
       } else {
         addToast({ type: 'error', message: result.message || '测试失败' })
       }
     } catch {
       addToast({ type: 'error', message: '测试失败' })
+    } finally {
+      setTestingChannelId(null)
     }
   }
 
@@ -191,8 +195,8 @@ export function NotificationChannels() {
   const getConfigHint = (type: ChannelType) => {
     switch (type) {
       case 'bark': return 'Bark是iOS推送通知服务，需要填写设备密钥'
-      case 'dingtalk': return '请设置钉钉机器人Webhook URL，可选填加签密钥'
-      case 'feishu': return '请设置飞书机器人Webhook URL'
+      case 'dingtalk': return '请设置钉钉机器人 Webhook URL，如开启加签可一并填写 secret'
+      case 'feishu': return '请设置飞书机器人 Webhook URL，如开启签名校验可一并填写 secret'
       case 'email': return '需要填写SMTP服务器、端口、发送邮箱、密码和接收邮箱'
       case 'wechat': return '请设置企业微信机器人Webhook URL'
       case 'telegram': return '需要填写Bot Token和Chat ID'
@@ -324,10 +328,15 @@ export function NotificationChannels() {
                     </span>
                     <button
                       onClick={() => handleTest(channel.id)}
+                      disabled={testingChannelId === channel.id}
                       className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500"
                       title="测试"
                     >
-                      <Send className="w-4 h-4" />
+                      {testingChannelId === channel.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
                     </button>
                     <button
                       onClick={() => openEditModal(channel)}
