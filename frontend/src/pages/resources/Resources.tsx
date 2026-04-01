@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Download,
   Edit2,
+  FileText,
   FolderKanban,
   Link2,
   Loader2,
@@ -23,6 +24,7 @@ import { getAccounts } from '@/api/accounts'
 import {
   createResource,
   deleteResource,
+  exportResourcesCopywriting,
   exportResourcesDocument,
   getResourceItemAssociations,
   getResources,
@@ -31,6 +33,7 @@ import {
   type ResourceAssociationItem,
   type ResourceData,
 } from '@/api/resources'
+import { getUserSetting } from '@/api/settings'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { useAuthStore } from '@/store/authStore'
@@ -87,6 +90,11 @@ const associationStatusOptions = [
   { value: 'unlinked', label: '仅看未关联商品' },
 ]
 
+const resourceCopyExportOptions = [
+  { value: 'since_last', label: '上次导出该文案至当前时间' },
+  { value: 'all', label: '全部资源' },
+]
+
 const initialFormData: ResourceFormData = {
   resource_name: '',
   resource_type: '',
@@ -111,6 +119,15 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   }
 
   return maybeError.response?.data?.detail || maybeError.response?.data?.message || fallback
+}
+
+const formatExportFileTimestamp = (date: Date = new Date()) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${year}${month}${day}_${hours}${minutes}`
 }
 
 const formatWeekdayShortLabels = (weekdays: number[]) =>
@@ -438,6 +455,11 @@ export function Resources() {
   const [formData, setFormData] = useState<ResourceFormData>(initialFormData)
   const [submitting, setSubmitting] = useState(false)
   const [exportingDocument, setExportingDocument] = useState(false)
+  const [exportCopyModalOpen, setExportCopyModalOpen] = useState(false)
+  const [exportCopyRange, setExportCopyRange] = useState<'all' | 'since_last'>('since_last')
+  const [exportingCopywriting, setExportingCopywriting] = useState(false)
+  const [copywritingLastExportAt, setCopywritingLastExportAt] = useState('')
+  const [loadingCopywritingLastExportAt, setLoadingCopywritingLastExportAt] = useState(false)
   const [associationModalOpen, setAssociationModalOpen] = useState(false)
   const [associationLoading, setAssociationLoading] = useState(false)
   const [associationSaving, setAssociationSaving] = useState(false)
@@ -601,7 +623,7 @@ export function Resources() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = '资源文档.md'
+      link.download = `资源文档_${formatExportFileTimestamp()}.md`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -611,6 +633,50 @@ export function Resources() {
       addToast({ type: 'error', message: getErrorMessage(error, '导出文档失败') })
     } finally {
       setExportingDocument(false)
+    }
+  }
+
+  const openExportCopyModal = async () => {
+    setExportCopyRange('since_last')
+    setCopywritingLastExportAt('')
+    setExportCopyModalOpen(true)
+    setLoadingCopywritingLastExportAt(true)
+
+    try {
+      const result = await getUserSetting('resources_copywriting_last_exported_at')
+      setCopywritingLastExportAt(result.success ? (result.value || '') : '')
+    } catch {
+      setCopywritingLastExportAt('')
+    } finally {
+      setLoadingCopywritingLastExportAt(false)
+    }
+  }
+
+  const closeExportCopyModal = () => {
+    setExportCopyModalOpen(false)
+    setExportingCopywriting(false)
+  }
+
+  const handleExportCopywriting = async () => {
+    try {
+      setExportingCopywriting(true)
+      const blob = await exportResourcesCopywriting({
+        export_range: exportCopyRange,
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `资源导出文案_${formatExportFileTimestamp()}.txt`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+      addToast({ type: 'success', message: exportCopyRange === 'since_last' ? '更新文案已开始下载' : '资源文案已开始下载' })
+      closeExportCopyModal()
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '导出文案失败') })
+    } finally {
+      setExportingCopywriting(false)
     }
   }
 
@@ -710,6 +776,10 @@ export function Resources() {
           <p className="page-description">管理资源名称、资源类型、推荐星级和追更信息，商品关联也在这里维护。卡密链接请到卡密管理中维护。</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <button onClick={openExportCopyModal} disabled={exportingCopywriting} className="btn-ios-secondary">
+            {exportingCopywriting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+            导出文案
+          </button>
           <button onClick={handleExportDocument} disabled={exportingDocument} className="btn-ios-secondary">
             {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             导出文档
@@ -1148,6 +1218,85 @@ export function Resources() {
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {exportCopyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">导出文案</h3>
+                <p className="text-sm text-slate-500 mt-1">导出纯文本资源文案，仅包含资源名称、更至集数和各网盘链接。</p>
+              </div>
+              <button onClick={closeExportCopyModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="space-y-3">
+                <label className="input-label">日期范围</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {resourceCopyExportOptions.map((option) => {
+                    const selected = exportCopyRange === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setExportCopyRange(option.value as 'all' | 'since_last')}
+                        className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
+                          selected
+                            ? 'border-blue-500 bg-blue-50 text-blue-600'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
+                        }`}
+                      >
+                        <div className="text-base font-medium">{option.label}</div>
+                        <div className="mt-1 text-sm text-slate-500">
+                          {option.value === 'since_last'
+                            ? '导出上次导出文案之后有变化的资源，并在末尾追加引导文案'
+                            : '导出当前账号下全部已配置卡密链接的资源'}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm text-slate-600">
+                {exportCopyRange === 'since_last' ? (
+                  <>
+                    <p>
+                      本次将导出：
+                      {loadingCopywritingLastExportAt
+                        ? ' 正在读取上次导出时间...'
+                        : copywritingLastExportAt
+                          ? ` ${copywritingLastExportAt} 至当前时间更新的资源文案`
+                          : ' 首次使用将导出全部已配置卡密链接的资源，并记录本次导出时间'}
+                    </p>
+                    <p className="mt-1 text-slate-500">导出成功后，系统会自动把本次导出时间记为新的基线，并在最后一行追加「🔥更多热门剧-影-综-漫点群公告去找🔥」。</p>
+                  </>
+                ) : (
+                  <p>本次将导出当前账号下全部已配置卡密链接的资源文案。</p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={closeExportCopyModal} className="btn-ios-secondary">
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCopywriting}
+                  disabled={exportingCopywriting || (exportCopyRange === 'since_last' && loadingCopywritingLastExportAt)}
+                  className="btn-ios-primary min-w-[132px]"
+                >
+                  {exportingCopywriting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                  开始导出
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -116,3 +116,13 @@ export const exportResourcesDocument = async (): Promise<Blob> => {
   })
   return response.data
 }
+
+export const exportResourcesCopywriting = async (params?: {
+  export_range?: 'all' | 'since_last'
+}): Promise<Blob> => {
+  const response = await request.get('/resources/export-copywriting', {
+    params,
+    responseType: 'blob',
+  })
+  return response.data
+}

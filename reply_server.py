@@ -637,6 +637,17 @@ def get_resource_link_export_updated_at(link: Dict[str, Any]) -> Optional[dateti
         return None
 
 
+def get_resource_metadata_export_updated_at(resource: Dict[str, Any]) -> Optional[datetime]:
+    raw_value = str(resource.get('updated_at') or resource.get('created_at') or '').strip()
+    if not raw_value:
+        return None
+
+    try:
+        return parse_resource_export_datetime(raw_value)
+    except ValueError:
+        return None
+
+
 def format_resource_export_weekdays(weekdays: List[int]) -> str:
     short_labels = {
         1: '一',
@@ -658,6 +669,7 @@ def format_resource_export_title(resource_group: Dict[str, Any]) -> str:
     title_parts: List[str] = []
     recommend_level = int(resource_group.get('recommend_level') or 0)
     latest_episode = int(resource_group.get('latest_episode') or 0)
+    remark = str(resource_group.get('remark') or '').strip()
 
     if recommend_level > 0:
         title_parts.append('🌟' * recommend_level)
@@ -667,38 +679,31 @@ def format_resource_export_title(resource_group: Dict[str, Any]) -> str:
     if latest_episode > 0:
         title_parts.append(f"更至{latest_episode}集")
 
+    if resource_group.get('is_completed'):
+        title_parts.append('【完结】')
+        if remark:
+            title_parts.append(f"「{remark}」")
+
     return ' '.join(title_parts)
 
 
 def format_resource_export_meta(resource_group: Dict[str, Any]) -> str:
-    parts: List[str] = []
     update_mode = str(resource_group.get('update_mode') or '').strip()
     update_weekdays = resource_group.get('update_weekdays') or []
     daily_episode_count = int(resource_group.get('daily_episode_count') or 0)
     interval_days = int(resource_group.get('interval_days') or 0)
-    remark = str(resource_group.get('remark') or '').strip()
-
-    if resource_group.get('is_completed'):
-        parts.append('**【完结】**')
-        if remark:
-            parts.append(remark)
-        return ' '.join(part for part in parts if part)
 
     if update_mode == 'weekly':
         weekday_text = format_resource_export_weekdays(update_weekdays)
         if weekday_text:
-            parts.append(f"每周{weekday_text}更1集")
-        else:
-            parts.append("周更")
+            return f"每周{weekday_text}更1集"
+        return "周更"
     elif update_mode == 'daily':
-        parts.append(f"日更{daily_episode_count}集" if daily_episode_count > 0 else '日更')
+        return f"日更{daily_episode_count}集" if daily_episode_count > 0 else '日更'
     elif update_mode == 'interval':
-        parts.append(f"每{interval_days}天更1集" if interval_days > 0 else '固定更新')
+        return f"每{interval_days}天更1集" if interval_days > 0 else '固定更新'
 
-    if remark:
-        parts.append(remark)
-
-    return ' · '.join(part for part in parts if part)
+    return ''
 
 
 def build_resource_links_export_document(resource_links: List[Dict[str, Any]], empty_message: str = "当前暂无卡密资源") -> str:
@@ -779,8 +784,8 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
         updated_at_dt = resource_group.get('latest_updated_at_dt')
         is_today_updated = bool(updated_at_dt and updated_at_dt.date() == datetime.now().date())
 
-        if is_today_updated:
-            grouped_by_section['today'].append(resource_group)
+        if is_today_updated and int(resource_group.get('recommend_level') or 0) > 0:
+            grouped_by_section['hot'].append(resource_group)
         elif resource_type != '未分类':
             grouped_by_section[resource_type].append(resource_group)
         elif resource_group.get('is_completed'):
@@ -827,16 +832,16 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
 
     lines: List[str] = []
     today = datetime.now().date()
-    today_hot_resources = sort_resource_groups(grouped_by_section.get('today', []))
+    today_hot_resources = sort_resource_groups(grouped_by_section.get('hot', []))
 
     if today_hot_resources:
-        lines.append(f"### --------今日更新({today.month}.{today.day})-------")
+        lines.append(f"### 热门更新({today.month}.{today.day})")
         for resource_index, resource_group in enumerate(today_hot_resources):
             lines.append('')
             append_resource_group(lines, resource_group)
 
     sorted_types = sorted(
-        [resource_type for resource_type in grouped_by_section.keys() if resource_type not in ('today', '完结')],
+        [resource_type for resource_type in grouped_by_section.keys() if resource_type not in ('hot', '完结')],
         key=section_sort_key
     )
 
@@ -863,6 +868,87 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
         for resource_group in completed_resources:
             lines.append('')
             append_resource_group(lines, resource_group)
+
+    return '\n'.join(lines).strip() + '\n'
+
+
+def build_resource_copywriting_export_text(
+    resource_links: List[Dict[str, Any]],
+    empty_message: str = "当前暂无已配置卡密链接的资源",
+    append_more_line: bool = False
+) -> str:
+    drive_order = {
+        'baidu': 0,
+        'quark': 1,
+    }
+
+    grouped_by_name: Dict[str, Dict[str, Any]] = {}
+    for link in resource_links:
+        resource_name = normalize_resource_text_field(link.get('resource_name'), "资源名称")
+        resource_group = grouped_by_name.setdefault(resource_name, {
+            'resource_name': resource_name,
+            'latest_episode': 0,
+            'links': [],
+            'latest_updated_at_dt': None,
+        })
+
+        latest_episode = int(link.get('latest_episode') or 0)
+        if latest_episode > int(resource_group.get('latest_episode') or 0):
+            resource_group['latest_episode'] = latest_episode
+
+        updated_at_dt = get_resource_link_export_updated_at(link)
+        if updated_at_dt and (
+            resource_group['latest_updated_at_dt'] is None
+            or updated_at_dt > resource_group['latest_updated_at_dt']
+        ):
+            resource_group['latest_updated_at_dt'] = updated_at_dt
+
+        resource_group['links'].append({
+            'drive_type': str(link.get('drive_type') or '').strip(),
+            'resource_url': str(link.get('resource_url') or '').strip(),
+        })
+
+    if not grouped_by_name:
+        lines = [empty_message]
+        if append_more_line:
+            lines.extend(['', '🔥更多热门剧-影-综-漫点群公告去找🔥'])
+        return '\n'.join(lines).strip() + '\n'
+
+    resource_groups = sorted(grouped_by_name.values(), key=lambda item: item['resource_name'])
+    resource_groups.sort(
+        key=lambda item: item.get('latest_updated_at_dt') or datetime.min,
+        reverse=True
+    )
+
+    lines: List[str] = []
+    for index, resource_group in enumerate(resource_groups):
+        title = resource_group['resource_name']
+        latest_episode = int(resource_group.get('latest_episode') or 0)
+        if latest_episode > 0:
+            title = f"{title} 更至{latest_episode}集"
+
+        lines.append(title)
+
+        sorted_links = sorted(
+            resource_group['links'],
+            key=lambda item: (
+                drive_order.get(item['drive_type'], 9),
+                get_resource_drive_label(item['drive_type']).lower(),
+                item['resource_url'],
+            )
+        )
+        for link in sorted_links:
+            resource_url = link['resource_url']
+            if not resource_url:
+                continue
+            drive_label = get_resource_drive_label(link['drive_type']) or '网盘'
+            lines.append(f"{drive_label}链接: {resource_url}")
+
+        if index != len(resource_groups) - 1:
+            lines.append('')
+
+    if append_more_line:
+        lines.extend(['', '🔥更多热门剧-影-综-漫点群公告去找🔥'])
 
     return '\n'.join(lines).strip() + '\n'
 
@@ -5097,7 +5183,7 @@ def export_resources_document(current_user: Dict[str, Any] = Depends(get_current
             resource_links,
             empty_message="当前暂无已配置卡密链接的资源"
         )
-        filename = f"resources_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        filename = f"resources_document_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
         encoded_filename = quote(filename.encode('utf-8'))
 
         return StreamingResponse(
@@ -5109,6 +5195,89 @@ def export_resources_document(current_user: Dict[str, Any] = Depends(get_current
         )
     except Exception as e:
         log_with_user('error', f"导出资源文档失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/resources/export-copywriting")
+def export_resources_copywriting(
+    export_range: str = 'all',
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """导出资源文案"""
+    try:
+        normalized_export_range = str(export_range or 'all').strip().lower()
+        if normalized_export_range not in ('all', 'since_last'):
+            raise HTTPException(status_code=400, detail="导出范围不正确")
+
+        resource_links = db_manager.list_resource_links(current_user['user_id'])
+        export_links = resource_links
+        empty_message = "当前暂无已配置卡密链接的资源"
+        filename_prefix = "resources_copywriting"
+        append_more_line = normalized_export_range == 'since_last'
+
+        if normalized_export_range == 'since_last':
+            last_export_setting = db_manager.get_user_setting(
+                current_user['user_id'],
+                'resources_copywriting_last_exported_at'
+            )
+            last_export_value = (last_export_setting or {}).get('value', '').strip()
+            updated_after_dt = parse_resource_export_datetime(last_export_value) if last_export_value else None
+
+            updated_resource_names = set()
+
+            for resource in db_manager.list_resources(current_user['user_id']):
+                resource_name = str(resource.get('resource_name') or '').strip()
+                if not resource_name:
+                    continue
+                updated_at_dt = get_resource_metadata_export_updated_at(resource)
+                if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
+                    updated_resource_names.add(resource_name)
+
+            for link in resource_links:
+                resource_name = str(link.get('resource_name') or '').strip()
+                if not resource_name:
+                    continue
+                updated_at_dt = get_resource_link_export_updated_at(link)
+                if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
+                    updated_resource_names.add(resource_name)
+
+            export_links = [
+                link for link in resource_links
+                if str(link.get('resource_name') or '').strip() in updated_resource_names
+            ]
+            empty_message = "当前没有符合导出条件的更新资源"
+            filename_prefix = "resources_copywriting_since_last"
+
+        document_content = build_resource_copywriting_export_text(
+            export_links,
+            empty_message=empty_message,
+            append_more_line=append_more_line,
+        )
+        filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+        encoded_filename = quote(filename.encode('utf-8'))
+        export_finished_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        if normalized_export_range == 'since_last':
+            db_manager.set_user_setting(
+                current_user['user_id'],
+                'resources_copywriting_last_exported_at',
+                export_finished_at,
+                '资源导出文案上次导出时间'
+            )
+
+        return StreamingResponse(
+            io.BytesIO(document_content.encode('utf-8-sig')),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log_with_user('error', f"导出资源文案失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -5442,7 +5611,7 @@ def export_resource_links_document(
                 filename_prefix = "resource_links_updated_document"
 
         document_content = build_resource_links_export_document(export_links, empty_message=empty_message)
-        filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
         encoded_filename = quote(filename.encode('utf-8'))
         export_finished_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
