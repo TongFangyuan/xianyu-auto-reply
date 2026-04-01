@@ -6,6 +6,7 @@ import {
   Check,
   CheckSquare,
   ChevronDown,
+  Download,
   Edit2,
   FolderKanban,
   Link2,
@@ -22,6 +23,7 @@ import { getAccounts } from '@/api/accounts'
 import {
   createResource,
   deleteResource,
+  exportResourcesDocument,
   getResourceItemAssociations,
   getResources,
   updateResource,
@@ -55,11 +57,11 @@ const resourceTypeSuggestions = ['电视剧', '动漫', '短剧', '电影', '综
 
 const recommendLevelOptions = [
   { value: '0', label: '未评分' },
-  { value: '5', label: '5 星推荐' },
-  { value: '4', label: '4 星推荐' },
-  { value: '3', label: '3 星推荐' },
-  { value: '2', label: '2 星推荐' },
-  { value: '1', label: '1 星推荐' },
+  { value: '5', label: '🌟🌟🌟🌟🌟' },
+  { value: '4', label: '🌟🌟🌟🌟' },
+  { value: '3', label: '🌟🌟🌟' },
+  { value: '2', label: '🌟🌟' },
+  { value: '1', label: '🌟' },
 ]
 
 const updateModeOptions = [
@@ -111,12 +113,12 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return maybeError.response?.data?.detail || maybeError.response?.data?.message || fallback
 }
 
-const formatWeekdayLabels = (weekdays: number[]) =>
+const formatWeekdayShortLabels = (weekdays: number[]) =>
   weekdays
     .slice()
     .sort((a, b) => a - b)
-    .map((weekday) => weekdayOptions.find((option) => option.value === weekday)?.label || `周${weekday}`)
-    .join(' / ')
+    .map((weekday) => weekdayOptions.find((option) => option.value === weekday)?.label.replace('周', '') || String(weekday))
+    .join('、')
 
 const buildResourceUpdateSummary = (resource: Partial<ResourceData>) => {
   const updateMode = (resource.update_mode || '') as ResourceUpdateMode
@@ -125,20 +127,22 @@ const buildResourceUpdateSummary = (resource: Partial<ResourceData>) => {
   const lines: string[] = []
 
   if (updateMode === 'weekly' && weekdays.length > 0) {
-    lines.push(`周更 · ${formatWeekdayLabels(weekdays)}`)
+    lines.push(`每周${formatWeekdayShortLabels(weekdays)}更1集`)
   } else if (updateMode === 'daily') {
-    lines.push(`日更 · 每天 ${resource.daily_episode_count || 0} 集`)
+    lines.push(`日更${resource.daily_episode_count || 0}集`)
   } else if (updateMode === 'interval' && Number(resource.interval_days || 0) > 0) {
-    lines.push(`固定更新 · 每 ${resource.interval_days} 天`)
+    lines.push(`每${resource.interval_days}天更1集`)
   } else {
     lines.push('更新频率未设置')
   }
 
   if (latestEpisode > 0) {
-    lines.push(`更新至 ${latestEpisode} 集`)
+    lines.push(`更至${latestEpisode}集`)
   }
 
-  lines.push(resource.is_completed ? '已完结' : '连载中')
+  if (resource.is_completed) {
+    lines.push('已完结')
+  }
 
   if (resource.remark) {
     lines.push(String(resource.remark))
@@ -401,7 +405,7 @@ function ResourceMetadataFields({
             }`}
           >
             {value.is_completed ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-            {value.is_completed ? '已完结' : '连载中'}
+            {value.is_completed ? '已完结' : '未完结'}
           </button>
         </div>
       </div>
@@ -433,6 +437,7 @@ export function Resources() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formData, setFormData] = useState<ResourceFormData>(initialFormData)
   const [submitting, setSubmitting] = useState(false)
+  const [exportingDocument, setExportingDocument] = useState(false)
   const [associationModalOpen, setAssociationModalOpen] = useState(false)
   const [associationLoading, setAssociationLoading] = useState(false)
   const [associationSaving, setAssociationSaving] = useState(false)
@@ -589,6 +594,26 @@ export function Resources() {
     }
   }
 
+  const handleExportDocument = async () => {
+    try {
+      setExportingDocument(true)
+      const blob = await exportResourcesDocument()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = '资源文档.md'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+      addToast({ type: 'success', message: '资源文档已开始下载' })
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '导出文档失败') })
+    } finally {
+      setExportingDocument(false)
+    }
+  }
+
   const closeAssociationModal = () => {
     setAssociationModalOpen(false)
     setAssociationLoading(false)
@@ -685,6 +710,10 @@ export function Resources() {
           <p className="page-description">管理资源名称、资源类型、推荐星级和追更信息，商品关联也在这里维护。卡密链接请到卡密管理中维护。</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <button onClick={handleExportDocument} disabled={exportingDocument} className="btn-ios-secondary">
+            {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            导出文档
+          </button>
           <button onClick={openAddModal} className="btn-ios-primary">
             <Plus className="w-4 h-4" />
             新增资源
@@ -802,11 +831,8 @@ export function Resources() {
                       </td>
                       <td className="min-w-[120px]">
                         {Number(resource.recommend_level || 0) > 0 ? (
-                          <div className="space-y-1">
-                            <div className="text-amber-500 text-sm tracking-[0.2em]">
-                              {'★'.repeat(Number(resource.recommend_level || 0))}
-                            </div>
-                            <div className="text-xs text-slate-500">{resource.recommend_level} 星推荐</div>
+                          <div className="text-amber-500 text-sm tracking-[0.15em]">
+                            {'🌟'.repeat(Number(resource.recommend_level || 0))}
                           </div>
                         ) : (
                           <span className="text-sm text-slate-400">未评分</span>
@@ -954,7 +980,7 @@ export function Resources() {
                         </span>
                         {Number(associationResource.recommend_level || 0) > 0 && (
                           <span className="text-sm text-amber-500">
-                            {'★'.repeat(Number(associationResource.recommend_level || 0))}
+                            {'🌟'.repeat(Number(associationResource.recommend_level || 0))}
                           </span>
                         )}
                       </div>

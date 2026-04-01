@@ -1,4 +1,4 @@
-import { get, post, put, del } from '@/utils/request'
+import request, { get, post, put, del } from '@/utils/request'
 
 export interface ResourceData {
   id?: number
@@ -108,4 +108,11 @@ export const updateResourceItemAssociations = (
   itemIds: number[]
 ): Promise<ResourceAssociationUpdateResponse> => {
   return put(`/resources/${resourceId}/item-associations`, { item_ids: itemIds })
+}
+
+export const exportResourcesDocument = async (): Promise<Blob> => {
+  const response = await request.get('/resources/export-document', {
+    responseType: 'blob',
+  })
+  return response.data
 }
