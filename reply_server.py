@@ -791,12 +791,8 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
 
         if is_today_updated and int(resource_group.get('recommend_level') or 0) > 0:
             grouped_by_section['hot'].append(resource_group)
-        elif resource_type != '未分类':
-            grouped_by_section[resource_type].append(resource_group)
-        elif resource_group.get('is_completed'):
-            grouped_by_section['完结'].append(resource_group)
         else:
-            grouped_by_section['未分类'].append(resource_group)
+            grouped_by_section[resource_type].append(resource_group)
 
     def section_sort_key(resource_type: str):
         if resource_type == '未分类':
@@ -833,6 +829,9 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
             key=lambda item: int(item.get('recommend_level') or 0),
             reverse=True
         )
+        sorted_groups.sort(
+            key=lambda item: bool(item.get('is_completed'))
+        )
         return sorted_groups
 
     lines: List[str] = []
@@ -846,7 +845,7 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
             append_resource_group(lines, resource_group)
 
     sorted_types = sorted(
-        [resource_type for resource_type in grouped_by_section.keys() if resource_type not in ('hot', '完结')],
+        [resource_type for resource_type in grouped_by_section.keys() if resource_type != 'hot'],
         key=section_sort_key
     )
 
@@ -860,17 +859,6 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
             lines.append('')
         lines.append(f"### ----------{resource_type}---------")
         for resource_group in resources:
-            lines.append('')
-            append_resource_group(lines, resource_group)
-
-    completed_resources = sort_resource_groups(grouped_by_section.get('完结', []))
-    if completed_resources:
-        if lines:
-            lines.append('')
-            lines.append('---')
-            lines.append('')
-        lines.append("### ----------完结---------")
-        for resource_group in completed_resources:
             lines.append('')
             append_resource_group(lines, resource_group)
 
