@@ -37,6 +37,7 @@ import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { formatServerDateTime } from '@/utils/datetime'
 
 type ModalType = 'add' | 'edit' | null
 
@@ -905,7 +906,9 @@ export function ResourceLinks() {
                           {link.resource_url}
                         </a>
                       </td>
-                      <td className="text-sm text-slate-500 whitespace-nowrap">{link.updated_at || link.created_at || '-'}</td>
+                      <td className="text-sm text-slate-500 whitespace-nowrap">
+                        {formatServerDateTime(link.updated_at || link.created_at)}
+                      </td>
                       <td>
                         <div className="flex items-center gap-1">
                           <button

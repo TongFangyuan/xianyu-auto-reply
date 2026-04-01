@@ -7,6 +7,7 @@ import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import type { Account } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 export function RiskLogs() {
   const { addToast } = useUIStore()
@@ -192,10 +193,10 @@ export function RiskLogs() {
                       </span>
                     </td>
                     <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
-                      {new Date(log.created_at).toLocaleString()}
+                      {formatServerDateTime(log.created_at)}
                     </td>
                     <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
-                      {log.updated_at ? new Date(log.updated_at).toLocaleString() : '-'}
+                      {formatServerDateTime(log.updated_at)}
                     </td>
                   </tr>
                 ))

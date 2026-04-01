@@ -5,6 +5,7 @@ import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
 import { cn } from '@/utils/cn'
+import { formatServerDateTime } from '@/utils/datetime'
 
 const limitOptions = [
   { value: 50, label: '50 条' },
@@ -172,7 +173,7 @@ export function Logs() {
                         {log.module}
                       </span>
                       <span className="text-xs text-slate-400 dark:text-slate-500">
-                        {new Date(log.created_at).toLocaleString()}
+                        {formatServerDateTime(log.created_at)}
                       </span>
                     </div>
                     <p className="text-sm text-slate-700 dark:text-slate-300 break-all">{log.message}</p>

@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import type { Order, Account } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 const statusMap: Record<string, { label: string; class: string }> = {
   processing: { label: '处理中', class: 'badge-warning' },
@@ -260,7 +261,7 @@ export function Orders() {
                       </td>
                       <td className="font-medium text-blue-600 dark:text-blue-400">{order.cookie_id}</td>
                       <td className="text-sm text-gray-500">
-                        {order.created_at ? new Date(order.created_at).toLocaleString('zh-CN') : '-'}
+                        {formatServerDateTime(order.created_at)}
                       </td>
                       <td>
                         <div className="flex items-center gap-1">
@@ -431,11 +432,11 @@ export function Orders() {
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div className="flex justify-between py-1 border-b border-gray-100 dark:border-gray-700">
                         <span className="text-gray-500">创建时间</span>
-                        <span>{orderDetail.created_at ? new Date(orderDetail.created_at).toLocaleString('zh-CN') : '未知'}</span>
+                        <span>{formatServerDateTime(orderDetail.created_at, '未知')}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 dark:border-gray-700">
                         <span className="text-gray-500">更新时间</span>
-                        <span>{orderDetail.updated_at ? new Date(orderDetail.updated_at).toLocaleString('zh-CN') : '未知'}</span>
+                        <span>{formatServerDateTime(orderDetail.updated_at, '未知')}</span>
                       </div>
                     </div>
                   </div>

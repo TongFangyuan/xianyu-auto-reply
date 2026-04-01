@@ -9,6 +9,7 @@ import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import type { ItemReply, Account } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 export function ItemReplies() {
   const { addToast } = useUIStore()
@@ -227,7 +228,7 @@ export function ItemReplies() {
                     <td className="max-w-[150px] truncate">{reply.title || '-'}</td>
                     <td className="max-w-[200px] truncate text-gray-500">{reply.reply}</td>
                     <td className="text-gray-500 text-sm">
-                      {reply.created_at ? new Date(reply.created_at).toLocaleString() : '-'}
+                      {formatServerDateTime(reply.created_at)}
                     </td>
                     <td>
                       <div className="">

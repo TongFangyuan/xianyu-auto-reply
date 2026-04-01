@@ -39,9 +39,12 @@ import { Select } from '@/components/common/Select'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import type { Account } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 type ModalType = 'add' | 'edit' | null
 type ResourceUpdateMode = '' | 'daily' | 'weekly' | 'interval'
+type ResourceCopyExportRange = 'all' | 'since_last' | 'duration'
+type ResourceCopyDurationUnit = 'minutes' | 'hours' | 'days'
 
 type ResourceFormData = {
   resource_name: string
@@ -92,7 +95,25 @@ const associationStatusOptions = [
 
 const resourceCopyExportOptions = [
   { value: 'since_last', label: '上次导出该文案至当前时间' },
+  { value: 'duration', label: '自定义时间范围' },
   { value: 'all', label: '全部资源' },
+]
+
+const resourceCopyDurationUnitOptions = [
+  { value: 'minutes', label: '分钟' },
+  { value: 'hours', label: '小时' },
+  { value: 'days', label: '天' },
+]
+
+const resourceCopyDurationPresets: Array<{
+  label: string
+  value: string
+  unit: ResourceCopyDurationUnit
+}> = [
+  { label: '近10分钟', value: '10', unit: 'minutes' },
+  { label: '近30分钟', value: '30', unit: 'minutes' },
+  { label: '近1小时', value: '1', unit: 'hours' },
+  { label: '近1天', value: '1', unit: 'days' },
 ]
 
 const initialFormData: ResourceFormData = {
@@ -129,6 +150,10 @@ const formatExportFileTimestamp = (date: Date = new Date()) => {
   const minutes = String(date.getMinutes()).padStart(2, '0')
   return `${year}${month}${day}_${hours}${minutes}`
 }
+
+const getDurationUnitLabel = (unit: ResourceCopyDurationUnit) => (
+  resourceCopyDurationUnitOptions.find((option) => option.value === unit)?.label || unit
+)
 
 const formatWeekdayShortLabels = (weekdays: number[]) =>
   weekdays
@@ -456,7 +481,9 @@ export function Resources() {
   const [submitting, setSubmitting] = useState(false)
   const [exportingDocument, setExportingDocument] = useState(false)
   const [exportCopyModalOpen, setExportCopyModalOpen] = useState(false)
-  const [exportCopyRange, setExportCopyRange] = useState<'all' | 'since_last'>('since_last')
+  const [exportCopyRange, setExportCopyRange] = useState<ResourceCopyExportRange>('since_last')
+  const [exportCopyDurationValue, setExportCopyDurationValue] = useState('10')
+  const [exportCopyDurationUnit, setExportCopyDurationUnit] = useState<ResourceCopyDurationUnit>('minutes')
   const [exportingCopywriting, setExportingCopywriting] = useState(false)
   const [copywritingLastExportAt, setCopywritingLastExportAt] = useState('')
   const [loadingCopywritingLastExportAt, setLoadingCopywritingLastExportAt] = useState(false)
@@ -638,6 +665,8 @@ export function Resources() {
 
   const openExportCopyModal = async () => {
     setExportCopyRange('since_last')
+    setExportCopyDurationValue('10')
+    setExportCopyDurationUnit('minutes')
     setCopywritingLastExportAt('')
     setExportCopyModalOpen(true)
     setLoadingCopywritingLastExportAt(true)
@@ -660,8 +689,17 @@ export function Resources() {
   const handleExportCopywriting = async () => {
     try {
       setExportingCopywriting(true)
+      const durationValue = Number(exportCopyDurationValue || 0)
+
+      if (exportCopyRange === 'duration' && (!Number.isInteger(durationValue) || durationValue <= 0)) {
+        addToast({ type: 'warning', message: '请输入正确的时间范围' })
+        return
+      }
+
       const blob = await exportResourcesCopywriting({
         export_range: exportCopyRange,
+        duration_value: exportCopyRange === 'duration' ? durationValue : undefined,
+        duration_unit: exportCopyRange === 'duration' ? exportCopyDurationUnit : undefined,
       })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -671,7 +709,10 @@ export function Resources() {
       link.click()
       document.body.removeChild(link)
       window.URL.revokeObjectURL(url)
-      addToast({ type: 'success', message: exportCopyRange === 'since_last' ? '更新文案已开始下载' : '资源文案已开始下载' })
+      addToast({
+        type: 'success',
+        message: exportCopyRange === 'all' ? '资源文案已开始下载' : '更新文案已开始下载',
+      })
       closeExportCopyModal()
     } catch (error) {
       addToast({ type: 'error', message: getErrorMessage(error, '导出文案失败') })
@@ -925,7 +966,9 @@ export function Resources() {
                           {resource.remark || '-'}
                         </div>
                       </td>
-                      <td className="text-sm text-slate-500 whitespace-nowrap">{resource.updated_at || resource.created_at || '-'}</td>
+                      <td className="text-sm text-slate-500 whitespace-nowrap">
+                        {formatServerDateTime(resource.updated_at || resource.created_at)}
+                      </td>
                       <td>
                         <div className="flex items-center gap-1">
                           <button
@@ -1192,7 +1235,9 @@ export function Resources() {
                                       </span>
                                     )}
                                   </td>
-                                  <td className="text-sm text-slate-500 whitespace-nowrap">{item.updated_at || '-'}</td>
+                                  <td className="text-sm text-slate-500 whitespace-nowrap">
+                                    {formatServerDateTime(item.updated_at)}
+                                  </td>
                                 </tr>
                               )
                             })
@@ -1238,14 +1283,14 @@ export function Resources() {
             <div className="p-5 space-y-4">
               <div className="space-y-3">
                 <label className="input-label">日期范围</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {resourceCopyExportOptions.map((option) => {
                     const selected = exportCopyRange === option.value
                     return (
                       <button
                         key={option.value}
                         type="button"
-                        onClick={() => setExportCopyRange(option.value as 'all' | 'since_last')}
+                        onClick={() => setExportCopyRange(option.value as ResourceCopyExportRange)}
                         className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
                           selected
                             ? 'border-blue-500 bg-blue-50 text-blue-600'
@@ -1256,6 +1301,8 @@ export function Resources() {
                         <div className="mt-1 text-sm text-slate-500">
                           {option.value === 'since_last'
                             ? '导出上次导出文案之后有变化的资源，并在末尾追加引导文案'
+                            : option.value === 'duration'
+                              ? '按最近一段时间筛选变化资源，支持分钟、小时、天'
                             : '导出当前账号下全部已配置卡密链接的资源'}
                         </div>
                       </button>
@@ -1263,6 +1310,61 @@ export function Resources() {
                   })}
                 </div>
               </div>
+
+              {exportCopyRange === 'duration' && (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="space-y-2">
+                    <label className="input-label">快捷选择</label>
+                    <div className="flex flex-wrap gap-2">
+                      {resourceCopyDurationPresets.map((preset) => {
+                        const selected = exportCopyDurationValue === preset.value && exportCopyDurationUnit === preset.unit
+                        return (
+                          <button
+                            key={`${preset.value}-${preset.unit}`}
+                            type="button"
+                            onClick={() => {
+                              setExportCopyDurationValue(preset.value)
+                              setExportCopyDurationUnit(preset.unit)
+                            }}
+                            className={`rounded-full border px-4 py-2 text-sm transition-colors ${
+                              selected
+                                ? 'border-blue-500 bg-blue-50 text-blue-600'
+                                : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="input-label mb-1">时间值</label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        value={exportCopyDurationValue}
+                        onChange={(e) => setExportCopyDurationValue(e.target.value)}
+                        className="input-ios"
+                        placeholder="例如 10"
+                      />
+                    </div>
+                    <div>
+                      <label className="input-label mb-1">时间单位</label>
+                      <Select
+                        value={exportCopyDurationUnit}
+                        onChange={(value) => setExportCopyDurationUnit((value || 'minutes') as ResourceCopyDurationUnit)}
+                        options={resourceCopyDurationUnitOptions}
+                        placeholder="请选择时间单位"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm text-slate-600">
                 {exportCopyRange === 'since_last' ? (
@@ -1276,6 +1378,11 @@ export function Resources() {
                           : ' 首次使用将导出全部已配置卡密链接的资源，并记录本次导出时间'}
                     </p>
                     <p className="mt-1 text-slate-500">导出成功后，系统会自动把本次导出时间记为新的基线，并在最后一行追加「🔥更多热门剧-影-综-漫点群公告去找🔥」。</p>
+                  </>
+                ) : exportCopyRange === 'duration' ? (
+                  <>
+                    <p>本次将导出：近 {exportCopyDurationValue || '0'} {getDurationUnitLabel(exportCopyDurationUnit)}内更新的资源文案。</p>
+                    <p className="mt-1 text-slate-500">这种方式不会更新“上次导出该文案”的基线时间，适合临时补导最近 10 分钟、30 分钟、1 小时、1 天等区间。</p>
                   </>
                 ) : (
                   <p>本次将导出当前账号下全部已配置卡密链接的资源文案。</p>

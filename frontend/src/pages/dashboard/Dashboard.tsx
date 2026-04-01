@@ -9,6 +9,7 @@ import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
 import type { AccountDetail } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 interface DashboardStats {
   totalAccounts: number
@@ -297,9 +298,7 @@ export function Dashboard() {
                         })()}
                       </td>
                       <td className="text-gray-500">
-                        {account.updated_at
-                          ? new Date(account.updated_at).toLocaleString()
-                          : '-'}
+                        {formatServerDateTime(account.updated_at)}
                       </td>
                     </tr>
                   )

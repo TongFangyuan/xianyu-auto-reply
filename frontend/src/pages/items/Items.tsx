@@ -7,6 +7,7 @@ import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
 import { Select } from '@/components/common/Select'
 import type { Account, Item } from '@/types'
+import { formatServerDateTime } from '@/utils/datetime'
 
 export function Items() {
   const { addToast } = useUIStore()
@@ -641,7 +642,7 @@ export function Items() {
                       </button>
                     </td>
                     <td className="text-gray-500 text-xs">
-                      {item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}
+                      {formatServerDateTime(item.updated_at)}
                     </td>
                     <td className="sticky right-0 bg-white dark:bg-slate-900">
                       <div className="flex gap-1">

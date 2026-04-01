@@ -118,7 +118,9 @@ export const exportResourcesDocument = async (): Promise<Blob> => {
 }
 
 export const exportResourcesCopywriting = async (params?: {
-  export_range?: 'all' | 'since_last'
+  export_range?: 'all' | 'since_last' | 'duration'
+  duration_value?: number
+  duration_unit?: 'minutes' | 'hours' | 'days'
 }): Promise<Blob> => {
   const response = await request.get('/resources/export-copywriting', {
     params,

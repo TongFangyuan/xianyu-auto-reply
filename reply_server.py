@@ -20,7 +20,7 @@ import pandas as pd
 import io
 import asyncio
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import cookie_manager
 from db_manager import db_manager
@@ -48,6 +48,7 @@ ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
+LOCAL_TIMEZONE = datetime.now().astimezone().tzinfo or timezone.utc
 
 # HTTP Bearer认证
 security = HTTPBearer(auto_error=False)
@@ -626,13 +627,17 @@ def parse_resource_export_datetime(value: str) -> datetime:
         raise ValueError("更新时间格式不正确") from exc
 
 
+def convert_db_utc_naive_to_local_naive(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc).astimezone(LOCAL_TIMEZONE).replace(tzinfo=None)
+
+
 def get_resource_link_export_updated_at(link: Dict[str, Any]) -> Optional[datetime]:
     raw_value = str(link.get('updated_at') or link.get('created_at') or '').strip()
     if not raw_value:
         return None
 
     try:
-        return parse_resource_export_datetime(raw_value)
+        return convert_db_utc_naive_to_local_naive(parse_resource_export_datetime(raw_value))
     except ValueError:
         return None
 
@@ -643,7 +648,7 @@ def get_resource_metadata_export_updated_at(resource: Dict[str, Any]) -> Optiona
         return None
 
     try:
-        return parse_resource_export_datetime(raw_value)
+        return convert_db_utc_naive_to_local_naive(parse_resource_export_datetime(raw_value))
     except ValueError:
         return None
 
@@ -951,6 +956,32 @@ def build_resource_copywriting_export_text(
         lines.extend(['', '🔥更多热门剧-影-综-漫点群公告去找🔥'])
 
     return '\n'.join(lines).strip() + '\n'
+
+
+def collect_updated_resource_names(
+    resource_links: List[Dict[str, Any]],
+    resources: List[Dict[str, Any]],
+    updated_after_dt: Optional[datetime]
+) -> set[str]:
+    updated_resource_names: set[str] = set()
+
+    for resource in resources:
+        resource_name = str(resource.get('resource_name') or '').strip()
+        if not resource_name:
+            continue
+        updated_at_dt = get_resource_metadata_export_updated_at(resource)
+        if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
+            updated_resource_names.add(resource_name)
+
+    for link in resource_links:
+        resource_name = str(link.get('resource_name') or '').strip()
+        if not resource_name:
+            continue
+        updated_at_dt = get_resource_link_export_updated_at(link)
+        if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
+            updated_resource_names.add(resource_name)
+
+    return updated_resource_names
 
 
 def _get_backup_directory() -> Path:
@@ -5201,15 +5232,18 @@ def export_resources_document(current_user: Dict[str, Any] = Depends(get_current
 @app.get("/resources/export-copywriting")
 def export_resources_copywriting(
     export_range: str = 'all',
+    duration_value: Optional[int] = None,
+    duration_unit: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """导出资源文案"""
     try:
         normalized_export_range = str(export_range or 'all').strip().lower()
-        if normalized_export_range not in ('all', 'since_last'):
+        if normalized_export_range not in ('all', 'since_last', 'duration'):
             raise HTTPException(status_code=400, detail="导出范围不正确")
 
         resource_links = db_manager.list_resource_links(current_user['user_id'])
+        resources = db_manager.list_resources(current_user['user_id'])
         export_links = resource_links
         empty_message = "当前暂无已配置卡密链接的资源"
         filename_prefix = "resources_copywriting"
@@ -5222,31 +5256,36 @@ def export_resources_copywriting(
             )
             last_export_value = (last_export_setting or {}).get('value', '').strip()
             updated_after_dt = parse_resource_export_datetime(last_export_value) if last_export_value else None
-
-            updated_resource_names = set()
-
-            for resource in db_manager.list_resources(current_user['user_id']):
-                resource_name = str(resource.get('resource_name') or '').strip()
-                if not resource_name:
-                    continue
-                updated_at_dt = get_resource_metadata_export_updated_at(resource)
-                if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
-                    updated_resource_names.add(resource_name)
-
-            for link in resource_links:
-                resource_name = str(link.get('resource_name') or '').strip()
-                if not resource_name:
-                    continue
-                updated_at_dt = get_resource_link_export_updated_at(link)
-                if updated_after_dt is None or (updated_at_dt and updated_at_dt >= updated_after_dt):
-                    updated_resource_names.add(resource_name)
-
+            updated_resource_names = collect_updated_resource_names(resource_links, resources, updated_after_dt)
             export_links = [
                 link for link in resource_links
                 if str(link.get('resource_name') or '').strip() in updated_resource_names
             ]
             empty_message = "当前没有符合导出条件的更新资源"
             filename_prefix = "resources_copywriting_since_last"
+        elif normalized_export_range == 'duration':
+            normalized_duration_unit = str(duration_unit or '').strip().lower()
+            if duration_value is None or int(duration_value) <= 0:
+                raise HTTPException(status_code=400, detail="请输入正确的时间范围")
+            if normalized_duration_unit not in ('minutes', 'hours', 'days'):
+                raise HTTPException(status_code=400, detail="时间单位不正确")
+
+            if normalized_duration_unit == 'minutes':
+                updated_after_dt = datetime.now() - timedelta(minutes=int(duration_value))
+                filename_prefix = f"resources_copywriting_{int(duration_value)}minutes"
+            elif normalized_duration_unit == 'hours':
+                updated_after_dt = datetime.now() - timedelta(hours=int(duration_value))
+                filename_prefix = f"resources_copywriting_{int(duration_value)}hours"
+            else:
+                updated_after_dt = datetime.now() - timedelta(days=int(duration_value))
+                filename_prefix = f"resources_copywriting_{int(duration_value)}days"
+
+            updated_resource_names = collect_updated_resource_names(resource_links, resources, updated_after_dt)
+            export_links = [
+                link for link in resource_links
+                if str(link.get('resource_name') or '').strip() in updated_resource_names
+            ]
+            empty_message = "当前没有符合导出条件的更新资源"
 
         document_content = build_resource_copywriting_export_text(
             export_links,
