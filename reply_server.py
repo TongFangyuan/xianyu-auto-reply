@@ -681,14 +681,14 @@ def format_resource_export_title(resource_group: Dict[str, Any]) -> str:
 
     title_parts.append(resource_group['resource_name'])
 
-    if remark:
-        title_parts.append(f"「{remark}」")
-
     if latest_episode > 0:
         title_parts.append(f"更至{latest_episode}集")
 
     if resource_group.get('is_completed'):
         title_parts.append('【完结】')
+
+    if remark:
+        title_parts.append(remark)
 
     return ' '.join(title_parts)
 
@@ -921,12 +921,12 @@ def build_resource_copywriting_export_text(
     lines: List[str] = []
     for index, resource_group in enumerate(resource_groups):
         title = resource_group['resource_name']
-        remark = str(resource_group.get('remark') or '').strip()
-        if remark:
-            title = f"{title}「{remark}」"
         latest_episode = int(resource_group.get('latest_episode') or 0)
         if latest_episode > 0:
             title = f"{title} 更至{latest_episode}集"
+        remark = str(resource_group.get('remark') or '').strip()
+        if remark:
+            title = f"{title} {remark}"
 
         lines.append(title)
 
