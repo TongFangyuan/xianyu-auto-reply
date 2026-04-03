@@ -1300,10 +1300,10 @@ export function Resources() {
                         <div className="text-base font-medium">{option.label}</div>
                         <div className="mt-1 text-sm text-slate-500">
                           {option.value === 'since_last'
-                            ? '导出上次导出文案之后有变化的资源，并在末尾追加引导文案'
+                            ? '导出上次导出文案之后有变化的资源，并在末尾追加群公告链接'
                             : option.value === 'duration'
-                              ? '按最近一段时间筛选变化资源，支持分钟、小时、天'
-                            : '导出当前账号下全部已配置卡密链接的资源'}
+                              ? '按最近一段时间筛选变化资源，支持分钟、小时、天，末尾同样追加群公告链接'
+                            : '导出当前账号下全部已配置卡密链接的资源，并在末尾追加群公告链接'}
                         </div>
                       </button>
                     )
@@ -1377,15 +1377,18 @@ export function Resources() {
                           ? ` ${copywritingLastExportAt} 至当前时间更新的资源文案`
                           : ' 首次使用将导出全部已配置卡密链接的资源，并记录本次导出时间'}
                     </p>
-                    <p className="mt-1 text-slate-500">导出成功后，系统会自动把本次导出时间记为新的基线，并在最后一行追加「🔥更多热门剧-影-综-漫点群公告去找🔥」。</p>
+                    <p className="mt-1 text-slate-500">导出成功后，系统会自动把本次导出时间记为新的基线；导出文案末尾会统一追加群公告引导和 KDocs 链接。</p>
                   </>
                 ) : exportCopyRange === 'duration' ? (
                   <>
                     <p>本次将导出：近 {exportCopyDurationValue || '0'} {getDurationUnitLabel(exportCopyDurationUnit)}内更新的资源文案。</p>
-                    <p className="mt-1 text-slate-500">这种方式不会更新“上次导出该文案”的基线时间，适合临时补导最近 10 分钟、30 分钟、1 小时、1 天等区间。</p>
+                    <p className="mt-1 text-slate-500">这种方式不会更新“上次导出该文案”的基线时间，适合临时补导最近 10 分钟、30 分钟、1 小时、1 天等区间；导出末尾同样会追加群公告引导和 KDocs 链接。</p>
                   </>
                 ) : (
-                  <p>本次将导出当前账号下全部已配置卡密链接的资源文案。</p>
+                  <>
+                    <p>本次将导出当前账号下全部已配置卡密链接的资源文案。</p>
+                    <p className="mt-1 text-slate-500">导出末尾会统一追加群公告引导和 KDocs 链接。</p>
+                  </>
                 )}
               </div>
 

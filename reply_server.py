@@ -120,6 +120,11 @@ RESOURCE_DRIVE_LABELS = {
     'baidu': '百度',
 }
 
+RESOURCE_COPYWRITING_APPEND_LINES = [
+    '🔥更多热门剧-影-综-漫点群公告去找🔥',
+    'https://www.kdocs.cn/l/ckxE5KFSxNov',
+]
+
 RESOURCE_TYPE_OPTIONS = [
     '电视剧',
     '动漫',
@@ -909,7 +914,7 @@ def build_resource_copywriting_export_text(
     if not grouped_by_name:
         lines = [empty_message]
         if append_more_line:
-            lines.extend(['', '🔥更多热门剧-影-综-漫点群公告去找🔥'])
+            lines.extend(['', *RESOURCE_COPYWRITING_APPEND_LINES])
         return '\n'.join(lines).strip() + '\n'
 
     resource_groups = sorted(grouped_by_name.values(), key=lambda item: item['resource_name'])
@@ -949,7 +954,7 @@ def build_resource_copywriting_export_text(
             lines.append('')
 
     if append_more_line:
-        lines.extend(['', '🔥更多热门剧-影-综-漫点群公告去找🔥'])
+        lines.extend(['', *RESOURCE_COPYWRITING_APPEND_LINES])
 
     return '\n'.join(lines).strip() + '\n'
 
@@ -5618,7 +5623,7 @@ def export_resources_copywriting(
         export_links = resource_links
         empty_message = "当前暂无已配置卡密链接的资源"
         filename_prefix = "resources_copywriting"
-        append_more_line = normalized_export_range == 'since_last'
+        append_more_line = True
 
         if normalized_export_range == 'since_last':
             last_export_setting = db_manager.get_user_setting(
