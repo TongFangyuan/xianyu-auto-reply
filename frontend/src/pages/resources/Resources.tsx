@@ -33,7 +33,7 @@ import {
   type ResourceAssociationItem,
   type ResourceData,
 } from '@/api/resources'
-import { getUserSetting } from '@/api/settings'
+import { getUserSetting, updateUserSetting } from '@/api/settings'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { useAuthStore } from '@/store/authStore'
@@ -115,6 +115,12 @@ const resourceCopyDurationPresets: Array<{
   { label: '近1小时', value: '1', unit: 'hours' },
   { label: '近1天', value: '1', unit: 'days' },
 ]
+
+const DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL = 'https://www.kdocs.cn/l/ckxE5KFSxNov'
+const RESOURCE_COPYWRITING_FOOTER_URL_SETTING_KEY = 'resources_copywriting_footer_url'
+const DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL = 'https://i.cetsteam.com/imgs/2026/04/03/e19ab387d2f87791.jpeg'
+const RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_KEY = 'resources_document_header_image_url'
+const IMAGE_BED_MANAGE_URL = 'https://img.cetsteam.com/vip/manage/mypic'
 
 const initialFormData: ResourceFormData = {
   resource_name: '',
@@ -480,6 +486,8 @@ export function Resources() {
   const [formData, setFormData] = useState<ResourceFormData>(initialFormData)
   const [submitting, setSubmitting] = useState(false)
   const [exportingDocument, setExportingDocument] = useState(false)
+  const [exportDocumentModalOpen, setExportDocumentModalOpen] = useState(false)
+  const [selectedExportDocumentTypes, setSelectedExportDocumentTypes] = useState<string[]>([])
   const [exportCopyModalOpen, setExportCopyModalOpen] = useState(false)
   const [exportCopyRange, setExportCopyRange] = useState<ResourceCopyExportRange>('since_last')
   const [exportCopyDurationValue, setExportCopyDurationValue] = useState('10')
@@ -487,6 +495,14 @@ export function Resources() {
   const [exportingCopywriting, setExportingCopywriting] = useState(false)
   const [copywritingLastExportAt, setCopywritingLastExportAt] = useState('')
   const [loadingCopywritingLastExportAt, setLoadingCopywritingLastExportAt] = useState(false)
+  const [copywritingFooterUrl, setCopywritingFooterUrl] = useState(DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL)
+  const [copywritingFooterUrlDraft, setCopywritingFooterUrlDraft] = useState(DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL)
+  const [loadingCopywritingFooterUrl, setLoadingCopywritingFooterUrl] = useState(false)
+  const [savingCopywritingFooterUrl, setSavingCopywritingFooterUrl] = useState(false)
+  const [documentHeaderImageUrl, setDocumentHeaderImageUrl] = useState(DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL)
+  const [documentHeaderImageUrlDraft, setDocumentHeaderImageUrlDraft] = useState(DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL)
+  const [loadingDocumentHeaderImageUrl, setLoadingDocumentHeaderImageUrl] = useState(false)
+  const [savingDocumentHeaderImageUrl, setSavingDocumentHeaderImageUrl] = useState(false)
   const [associationModalOpen, setAssociationModalOpen] = useState(false)
   const [associationLoading, setAssociationLoading] = useState(false)
   const [associationSaving, setAssociationSaving] = useState(false)
@@ -497,17 +513,37 @@ export function Resources() {
   const [associationAccountFilter, setAssociationAccountFilter] = useState('')
   const [associationStatusFilter, setAssociationStatusFilter] = useState('all')
 
-  const resourceTypeOptions = useMemo(() => {
-    const dynamicTypes = resources
-      .map((resource) => resource.resource_type?.trim())
-      .filter(Boolean) as string[]
-    const options = Array.from(new Set([
+  const allResourceTypes = useMemo(() => {
+    return Array.from(new Set([
       ...resourceTypeSuggestions,
-      ...dynamicTypes,
+      ...resources
+      .map((resource) => resource.resource_type?.trim())
+      .filter(Boolean) as string[],
+    ]))
+  }, [resources])
+
+  const resourceTypeOptions = useMemo(() => {
+    const options = Array.from(new Set([
+      ...allResourceTypes,
       ...(resourceTypeFilter ? [resourceTypeFilter] : []),
     ]))
     return [{ value: '', label: '全部资源类型' }, ...options.map((item) => ({ value: item, label: item }))]
-  }, [resourceTypeFilter, resources])
+  }, [allResourceTypes, resourceTypeFilter])
+
+  const resourceTypeInputOptions = useMemo(() => {
+    return Array.from(new Set([
+      ...allResourceTypes,
+      ...(formData.resource_type.trim() ? [formData.resource_type.trim()] : []),
+    ]))
+  }, [allResourceTypes, formData.resource_type])
+
+  const exportDocumentTypeOptions = useMemo(() => {
+    return Array.from(new Set(
+      resources
+        .map((resource) => resource.resource_type?.trim())
+        .filter(Boolean) as string[]
+    ))
+  }, [resources])
 
   const loadResources = async (
     keyword = queryKeyword,
@@ -543,6 +579,52 @@ export function Resources() {
     if (!_hasHydrated || !isAuthenticated || !token) return
     loadResources()
   }, [_hasHydrated, isAuthenticated, token, queryKeyword, resourceTypeFilter])
+
+  const loadCopywritingFooterUrl = async () => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+    try {
+      setLoadingCopywritingFooterUrl(true)
+      const result = await getUserSetting(RESOURCE_COPYWRITING_FOOTER_URL_SETTING_KEY)
+      const nextValue = result.success && (result.value || '').trim()
+        ? (result.value || '').trim()
+        : DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL
+      setCopywritingFooterUrl(nextValue)
+      setCopywritingFooterUrlDraft(nextValue)
+    } catch {
+      setCopywritingFooterUrl(DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL)
+      setCopywritingFooterUrlDraft(DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL)
+    } finally {
+      setLoadingCopywritingFooterUrl(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+    loadCopywritingFooterUrl()
+  }, [_hasHydrated, isAuthenticated, token])
+
+  const loadDocumentHeaderImageUrl = async () => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+    try {
+      setLoadingDocumentHeaderImageUrl(true)
+      const result = await getUserSetting(RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_KEY)
+      const nextValue = result.success && (result.value || '').trim()
+        ? (result.value || '').trim()
+        : DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL
+      setDocumentHeaderImageUrl(nextValue)
+      setDocumentHeaderImageUrlDraft(nextValue)
+    } catch {
+      setDocumentHeaderImageUrl(DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL)
+      setDocumentHeaderImageUrlDraft(DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL)
+    } finally {
+      setLoadingDocumentHeaderImageUrl(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+    loadDocumentHeaderImageUrl()
+  }, [_hasHydrated, isAuthenticated, token])
 
   const handleSearchSubmit = (e: FormEvent) => {
     e.preventDefault()
@@ -643,10 +725,44 @@ export function Resources() {
     }
   }
 
+  const openExportDocumentModal = () => {
+    setSelectedExportDocumentTypes(exportDocumentTypeOptions)
+    setExportDocumentModalOpen(true)
+  }
+
+  const closeExportDocumentModal = () => {
+    setExportDocumentModalOpen(false)
+  }
+
+  const toggleExportDocumentType = (resourceType: string) => {
+    setSelectedExportDocumentTypes((prev) => (
+      prev.includes(resourceType)
+        ? prev.filter((item) => item !== resourceType)
+        : [...prev, resourceType]
+    ))
+  }
+
   const handleExportDocument = async () => {
+    const normalizedSelectedTypes = Array.from(new Set(
+      selectedExportDocumentTypes
+        .map((resourceType) => resourceType.trim())
+        .filter(Boolean)
+    ))
+    const isExportingAllTypes = (
+      exportDocumentTypeOptions.length === 0
+      || normalizedSelectedTypes.length === exportDocumentTypeOptions.length
+    )
+
+    if (!isExportingAllTypes && normalizedSelectedTypes.length === 0) {
+      addToast({ type: 'warning', message: '请至少选择一种资源类型' })
+      return
+    }
+
     try {
       setExportingDocument(true)
-      const blob = await exportResourcesDocument()
+      const blob = await exportResourcesDocument({
+        resource_types: isExportingAllTypes ? undefined : normalizedSelectedTypes,
+      })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -655,6 +771,7 @@ export function Resources() {
       link.click()
       document.body.removeChild(link)
       window.URL.revokeObjectURL(url)
+      closeExportDocumentModal()
       addToast({ type: 'success', message: '资源文档已开始下载' })
     } catch (error) {
       addToast({ type: 'error', message: getErrorMessage(error, '导出文档失败') })
@@ -718,6 +835,74 @@ export function Resources() {
       addToast({ type: 'error', message: getErrorMessage(error, '导出文案失败') })
     } finally {
       setExportingCopywriting(false)
+    }
+  }
+
+  const handleSaveCopywritingFooterUrl = async () => {
+    const normalizedUrl = copywritingFooterUrlDraft.trim() || DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL
+
+    try {
+      const parsed = new URL(normalizedUrl)
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error('unsupported')
+      }
+    } catch {
+      addToast({ type: 'warning', message: '请输入正确的链接地址' })
+      return
+    }
+
+    try {
+      setSavingCopywritingFooterUrl(true)
+      const result = await updateUserSetting(
+        RESOURCE_COPYWRITING_FOOTER_URL_SETTING_KEY,
+        normalizedUrl,
+        '资源导出文案末尾群公告链接'
+      )
+      if (!result.success) {
+        addToast({ type: 'error', message: result.message || '保存链接失败' })
+        return
+      }
+      setCopywritingFooterUrl(normalizedUrl)
+      setCopywritingFooterUrlDraft(normalizedUrl)
+      addToast({ type: 'success', message: '导出尾部链接已保存' })
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '保存链接失败') })
+    } finally {
+      setSavingCopywritingFooterUrl(false)
+    }
+  }
+
+  const handleSaveDocumentHeaderImageUrl = async () => {
+    const normalizedUrl = documentHeaderImageUrlDraft.trim() || DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL
+
+    try {
+      const parsed = new URL(normalizedUrl)
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error('unsupported')
+      }
+    } catch {
+      addToast({ type: 'warning', message: '请输入正确的图片链接地址' })
+      return
+    }
+
+    try {
+      setSavingDocumentHeaderImageUrl(true)
+      const result = await updateUserSetting(
+        RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_KEY,
+        normalizedUrl,
+        '资源导出文档顶部引导图片链接'
+      )
+      if (!result.success) {
+        addToast({ type: 'error', message: result.message || '保存图片链接失败' })
+        return
+      }
+      setDocumentHeaderImageUrl(normalizedUrl)
+      setDocumentHeaderImageUrlDraft(normalizedUrl)
+      addToast({ type: 'success', message: '导出文档头图链接已保存' })
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '保存图片链接失败') })
+    } finally {
+      setSavingDocumentHeaderImageUrl(false)
     }
   }
 
@@ -804,6 +989,13 @@ export function Resources() {
 
   const linkedResourceCount = resources.filter((resource) => (resource.association_count || 0) > 0).length
   const completedResourceCount = resources.filter((resource) => resource.is_completed).length
+  const hasCopywritingFooterUrlChanges = copywritingFooterUrlDraft.trim() !== copywritingFooterUrl
+  const hasDocumentHeaderImageUrlChanges = documentHeaderImageUrlDraft.trim() !== documentHeaderImageUrl
+  const selectedExportDocumentTypeCount = selectedExportDocumentTypes.length
+  const isAllExportDocumentTypesSelected = (
+    exportDocumentTypeOptions.length === 0
+    || selectedExportDocumentTypeCount === exportDocumentTypeOptions.length
+  )
 
   if (loading && resources.length === 0) {
     return <PageLoading />
@@ -821,7 +1013,7 @@ export function Resources() {
             {exportingCopywriting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
             导出文案
           </button>
-          <button onClick={handleExportDocument} disabled={exportingDocument} className="btn-ios-secondary">
+          <button onClick={openExportDocumentModal} disabled={exportingDocument} className="btn-ios-secondary">
             {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             导出文档
           </button>
@@ -850,6 +1042,115 @@ export function Resources() {
           <div className="text-sm text-slate-500">已完结资源</div>
         </div>
       </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="vben-card"
+      >
+        <div className="vben-card-header">
+          <h2 className="vben-card-title">
+            <Link2 className="w-4 h-4" />
+            导出配置
+          </h2>
+        </div>
+        <div className="vben-card-body space-y-5">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+            <div className="lg:col-span-9">
+              <label className="input-label mb-1">导出文案末尾链接</label>
+              <input
+                value={copywritingFooterUrlDraft}
+                onChange={(e) => setCopywritingFooterUrlDraft(e.target.value)}
+                placeholder={DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL}
+                className="input-ios"
+                disabled={loadingCopywritingFooterUrl || savingCopywritingFooterUrl}
+              />
+              <p className="mt-2 text-sm text-slate-500">
+                导出文案末尾会固定追加群公告文案和这里配置的链接；未自定义时默认使用当前 KDocs 链接。
+              </p>
+              <a
+                href={copywritingFooterUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex max-w-full text-sm text-blue-600 hover:text-blue-700 break-all"
+              >
+                当前生效链接：{copywritingFooterUrl}
+              </a>
+            </div>
+            <div className="lg:col-span-3 flex items-end gap-3">
+              <button
+                type="button"
+                onClick={() => setCopywritingFooterUrlDraft(DEFAULT_RESOURCE_COPYWRITING_FOOTER_URL)}
+                className="btn-ios-secondary"
+                disabled={savingCopywritingFooterUrl}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveCopywritingFooterUrl}
+                className="btn-ios-primary flex-1"
+                disabled={loadingCopywritingFooterUrl || savingCopywritingFooterUrl || !hasCopywritingFooterUrlChanges}
+              >
+                {savingCopywritingFooterUrl ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                保存链接
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 border-t border-slate-200 pt-5">
+            <div className="lg:col-span-9">
+              <label className="input-label mb-1">导出文档顶部图片链接</label>
+              <input
+                value={documentHeaderImageUrlDraft}
+                onChange={(e) => setDocumentHeaderImageUrlDraft(e.target.value)}
+                placeholder={DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL}
+                className="input-ios"
+                disabled={loadingDocumentHeaderImageUrl || savingDocumentHeaderImageUrl}
+              />
+              <p className="mt-2 text-sm text-slate-500">
+                导出文档顶部会固定插入引导图片、追剧提示文案和分隔线；这里只配置图片地址，未自定义时使用默认图片。
+              </p>
+              <a
+                href={documentHeaderImageUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex max-w-full text-sm text-blue-600 hover:text-blue-700 break-all"
+              >
+                当前生效图片：{documentHeaderImageUrl}
+              </a>
+            </div>
+            <div className="lg:col-span-3 flex items-end gap-3">
+              <a
+                href={IMAGE_BED_MANAGE_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-ios-secondary"
+              >
+                图床网站
+              </a>
+              <button
+                type="button"
+                onClick={() => setDocumentHeaderImageUrlDraft(DEFAULT_RESOURCE_DOCUMENT_HEADER_IMAGE_URL)}
+                className="btn-ios-secondary"
+                disabled={savingDocumentHeaderImageUrl}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveDocumentHeaderImageUrl}
+                className="btn-ios-primary flex-1"
+                disabled={loadingDocumentHeaderImageUrl || savingDocumentHeaderImageUrl || !hasDocumentHeaderImageUrlChanges}
+              >
+                {savingDocumentHeaderImageUrl ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                保存图片
+              </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -1035,7 +1336,7 @@ export function Resources() {
                   <SuggestionInput
                     value={formData.resource_type}
                     onChange={(value) => setFormData((prev) => ({ ...prev, resource_type: value }))}
-                    options={resourceTypeSuggestions}
+                    options={resourceTypeInputOptions}
                     placeholder="例如：电视剧"
                     listId="resource-type-form-options"
                   />
@@ -1267,13 +1568,101 @@ export function Resources() {
         </div>
       )}
 
+      {exportDocumentModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">导出文档</h3>
+                <p className="text-sm text-slate-500 mt-1">支持按资源类型多选导出，默认导出全部资源类型。</p>
+              </div>
+              <button onClick={closeExportDocumentModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="input-label">资源类型</label>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedExportDocumentTypes(exportDocumentTypeOptions)}
+                    className="text-sm text-blue-600 hover:text-blue-700 disabled:text-slate-400"
+                    disabled={isAllExportDocumentTypesSelected}
+                  >
+                    全选
+                  </button>
+                </div>
+
+                {exportDocumentTypeOptions.length === 0 ? (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+                    当前暂无可选资源类型，将按全部资源导出。
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {exportDocumentTypeOptions.map((resourceType) => {
+                      const selected = selectedExportDocumentTypes.includes(resourceType)
+                      return (
+                        <button
+                          key={resourceType}
+                          type="button"
+                          onClick={() => toggleExportDocumentType(resourceType)}
+                          className={`flex items-center justify-between gap-3 rounded-2xl border px-4 py-4 text-left transition-colors ${
+                            selected
+                              ? 'border-blue-500 bg-blue-50 text-blue-600'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
+                          }`}
+                        >
+                          <span className="truncate text-base font-medium">{resourceType}</span>
+                          {selected ? (
+                            <CheckSquare className="w-5 h-5 flex-shrink-0 text-blue-500" />
+                          ) : (
+                            <Square className="w-5 h-5 flex-shrink-0 text-slate-400" />
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm text-slate-600">
+                {exportDocumentTypeOptions.length === 0 ? (
+                  <p>本次将导出当前账号下全部已配置卡密链接的资源文档。</p>
+                ) : isAllExportDocumentTypesSelected ? (
+                  <p>本次将导出全部资源类型的资源文档。</p>
+                ) : (
+                  <p>本次将导出 {selectedExportDocumentTypeCount} 种资源类型的资源文档。</p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={closeExportDocumentModal} className="btn-ios-secondary">
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportDocument}
+                  disabled={exportingDocument}
+                  className="btn-ios-primary min-w-[132px]"
+                >
+                  {exportingDocument ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  开始导出
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {exportCopyModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
             <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">导出文案</h3>
-                <p className="text-sm text-slate-500 mt-1">导出纯文本资源文案，包含资源名称、备注、更至集数和各网盘链接。</p>
+                <p className="text-sm text-slate-500 mt-1">导出纯文本资源文案，包含资源名称、备注、更至集数、完结状态和各网盘链接。</p>
               </div>
               <button onClick={closeExportCopyModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
                 <X className="w-4 h-4" />

@@ -110,8 +110,18 @@ export const updateResourceItemAssociations = (
   return put(`/resources/${resourceId}/item-associations`, { item_ids: itemIds })
 }
 
-export const exportResourcesDocument = async (): Promise<Blob> => {
+export const exportResourcesDocument = async (params?: {
+  resource_types?: string[]
+}): Promise<Blob> => {
+  const searchParams = new URLSearchParams()
+  for (const resourceType of params?.resource_types || []) {
+    const normalizedType = resourceType.trim()
+    if (normalizedType) {
+      searchParams.append('resource_types', normalizedType)
+    }
+  }
   const response = await request.get('/resources/export-document', {
+    params: searchParams,
     responseType: 'blob',
   })
   return response.data

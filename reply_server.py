@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -120,10 +120,14 @@ RESOURCE_DRIVE_LABELS = {
     'baidu': '百度',
 }
 
-RESOURCE_COPYWRITING_APPEND_LINES = [
-    '🔥更多热门剧-影-综-漫点群公告去找🔥',
-    'https://www.kdocs.cn/l/ckxE5KFSxNov',
-]
+RESOURCE_COPYWRITING_APPEND_TEXT = '🔥更多热门剧-影-综-漫点群公告去找🔥'
+RESOURCE_COPYWRITING_DEFAULT_FOOTER_URL = 'https://www.kdocs.cn/l/ckxE5KFSxNov'
+RESOURCE_COPYWRITING_FOOTER_URL_SETTING_KEY = 'resources_copywriting_footer_url'
+RESOURCE_COPYWRITING_FOOTER_URL_SETTING_DESCRIPTION = '资源导出文案末尾群公告链接'
+RESOURCE_DOCUMENT_HEADER_DEFAULT_IMAGE_URL = 'https://i.cetsteam.com/imgs/2026/04/03/e19ab387d2f87791.jpeg'
+RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_KEY = 'resources_document_header_image_url'
+RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_DESCRIPTION = '资源导出文档顶部引导图片链接'
+RESOURCE_DOCUMENT_HEADER_TEXT = '【❤️双击放大，长按扫码进群追剧】看剧复制链接到网盘打开 直接点不开的哦'
 
 RESOURCE_TYPE_OPTIONS = [
     '电视剧',
@@ -717,8 +721,45 @@ def format_resource_export_meta(resource_group: Dict[str, Any]) -> str:
     return ''
 
 
-def build_resource_links_export_document(resource_links: List[Dict[str, Any]], empty_message: str = "当前暂无卡密资源") -> str:
+def get_resource_copywriting_append_lines(user_id: int) -> List[str]:
+    footer_url = RESOURCE_COPYWRITING_DEFAULT_FOOTER_URL
+    setting = db_manager.get_user_setting(user_id, RESOURCE_COPYWRITING_FOOTER_URL_SETTING_KEY)
+    configured_url = str((setting or {}).get('value') or '').strip()
+    if configured_url:
+        footer_url = configured_url
+    return [RESOURCE_COPYWRITING_APPEND_TEXT, footer_url]
+
+
+def get_resource_document_intro_lines(user_id: int) -> List[str]:
+    image_url = RESOURCE_DOCUMENT_HEADER_DEFAULT_IMAGE_URL
+    setting = db_manager.get_user_setting(user_id, RESOURCE_DOCUMENT_HEADER_IMAGE_URL_SETTING_KEY)
+    configured_url = str((setting or {}).get('value') or '').strip()
+    if configured_url:
+        image_url = configured_url
+    return [
+        f"![]({image_url})",
+        '',
+        RESOURCE_DOCUMENT_HEADER_TEXT,
+        '---',
+    ]
+
+
+def build_resource_links_export_document(
+    resource_links: List[Dict[str, Any]],
+    empty_message: str = "当前暂无卡密资源",
+    intro_lines: Optional[List[str]] = None,
+) -> str:
+    normalized_intro_lines = [
+        str(line)
+        for line in (intro_lines or [])
+        if str(line).strip() or str(line) == ''
+    ]
+
     if not resource_links:
+        lines = [*normalized_intro_lines]
+        if lines:
+            lines.extend(['', f"> {empty_message}"])
+            return '\n'.join(lines).strip() + '\n'
         return f"> {empty_message}\n"
 
     drive_order = {
@@ -840,7 +881,9 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
         )
         return sorted_groups
 
-    lines: List[str] = []
+    lines: List[str] = [*normalized_intro_lines]
+    if lines:
+        lines.append('')
     today = datetime.now().date()
     today_hot_resources = sort_resource_groups(grouped_by_section.get('hot', []))
 
@@ -874,12 +917,18 @@ def build_resource_links_export_document(resource_links: List[Dict[str, Any]], e
 def build_resource_copywriting_export_text(
     resource_links: List[Dict[str, Any]],
     empty_message: str = "当前暂无已配置卡密链接的资源",
-    append_more_line: bool = False
+    append_more_line: bool = False,
+    append_lines: Optional[List[str]] = None,
 ) -> str:
     drive_order = {
         'baidu': 0,
         'quark': 1,
     }
+    normalized_append_lines = [
+        str(line).strip()
+        for line in (append_lines or [RESOURCE_COPYWRITING_APPEND_TEXT, RESOURCE_COPYWRITING_DEFAULT_FOOTER_URL])
+        if str(line).strip()
+    ]
 
     grouped_by_name: Dict[str, Dict[str, Any]] = {}
     for link in resource_links:
@@ -888,12 +937,15 @@ def build_resource_copywriting_export_text(
             'resource_name': resource_name,
             'remark': '',
             'latest_episode': 0,
+            'is_completed': False,
             'links': [],
             'latest_updated_at_dt': None,
         })
 
         if not resource_group['remark']:
             resource_group['remark'] = str(link.get('remark') or '').strip()
+        if not resource_group['is_completed']:
+            resource_group['is_completed'] = bool(link.get('is_completed'))
 
         latest_episode = int(link.get('latest_episode') or 0)
         if latest_episode > int(resource_group.get('latest_episode') or 0):
@@ -913,8 +965,8 @@ def build_resource_copywriting_export_text(
 
     if not grouped_by_name:
         lines = [empty_message]
-        if append_more_line:
-            lines.extend(['', *RESOURCE_COPYWRITING_APPEND_LINES])
+        if append_more_line and normalized_append_lines:
+            lines.extend(['', *normalized_append_lines])
         return '\n'.join(lines).strip() + '\n'
 
     resource_groups = sorted(grouped_by_name.values(), key=lambda item: item['resource_name'])
@@ -929,6 +981,8 @@ def build_resource_copywriting_export_text(
         latest_episode = int(resource_group.get('latest_episode') or 0)
         if latest_episode > 0:
             title = f"{title} 更至{latest_episode}集"
+        if resource_group.get('is_completed'):
+            title = f"{title} 【完结】"
         remark = str(resource_group.get('remark') or '').strip()
         if remark:
             title = f"{title} {remark}"
@@ -953,8 +1007,8 @@ def build_resource_copywriting_export_text(
         if index != len(resource_groups) - 1:
             lines.append('')
 
-    if append_more_line:
-        lines.extend(['', *RESOURCE_COPYWRITING_APPEND_LINES])
+    if append_more_line and normalized_append_lines:
+        lines.extend(['', *normalized_append_lines])
 
     return '\n'.join(lines).strip() + '\n'
 
@@ -5582,13 +5636,29 @@ def create_resource(resource_data: dict, current_user: Dict[str, Any] = Depends(
 
 
 @app.get("/resources/export-document")
-def export_resources_document(current_user: Dict[str, Any] = Depends(get_current_user)):
+def export_resources_document(
+    resource_types: Optional[List[str]] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
     """导出资源文档"""
     try:
         resource_links = db_manager.list_resource_links(current_user['user_id'])
+        intro_lines = get_resource_document_intro_lines(current_user['user_id'])
+        normalized_resource_types = [
+            normalize_resource_type(resource_type)
+            for resource_type in (resource_types or [])
+            if str(resource_type or '').strip()
+        ]
+        if normalized_resource_types:
+            normalized_type_set = set(normalized_resource_types)
+            resource_links = [
+                link for link in resource_links
+                if str(link.get('resource_type') or '').strip() in normalized_type_set
+            ]
         document_content = build_resource_links_export_document(
             resource_links,
-            empty_message="当前暂无已配置卡密链接的资源"
+            empty_message="当前暂无符合条件的已配置卡密链接资源",
+            intro_lines=intro_lines,
         )
         filename = f"resources_document_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
         encoded_filename = quote(filename.encode('utf-8'))
@@ -5624,6 +5694,7 @@ def export_resources_copywriting(
         empty_message = "当前暂无已配置卡密链接的资源"
         filename_prefix = "resources_copywriting"
         append_more_line = True
+        append_lines = get_resource_copywriting_append_lines(current_user['user_id'])
 
         if normalized_export_range == 'since_last':
             last_export_setting = db_manager.get_user_setting(
@@ -5667,6 +5738,7 @@ def export_resources_copywriting(
             export_links,
             empty_message=empty_message,
             append_more_line=append_more_line,
+            append_lines=append_lines,
         )
         filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
         encoded_filename = quote(filename.encode('utf-8'))
