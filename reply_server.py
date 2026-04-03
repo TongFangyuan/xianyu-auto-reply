@@ -681,13 +681,14 @@ def format_resource_export_title(resource_group: Dict[str, Any]) -> str:
 
     title_parts.append(resource_group['resource_name'])
 
+    if remark:
+        title_parts.append(f"「{remark}」")
+
     if latest_episode > 0:
         title_parts.append(f"更至{latest_episode}集")
 
     if resource_group.get('is_completed'):
         title_parts.append('【完结】')
-        if remark:
-            title_parts.append(f"「{remark}」")
 
     return ' '.join(title_parts)
 
@@ -880,10 +881,14 @@ def build_resource_copywriting_export_text(
         resource_name = normalize_resource_text_field(link.get('resource_name'), "资源名称")
         resource_group = grouped_by_name.setdefault(resource_name, {
             'resource_name': resource_name,
+            'remark': '',
             'latest_episode': 0,
             'links': [],
             'latest_updated_at_dt': None,
         })
+
+        if not resource_group['remark']:
+            resource_group['remark'] = str(link.get('remark') or '').strip()
 
         latest_episode = int(link.get('latest_episode') or 0)
         if latest_episode > int(resource_group.get('latest_episode') or 0):
@@ -916,6 +921,9 @@ def build_resource_copywriting_export_text(
     lines: List[str] = []
     for index, resource_group in enumerate(resource_groups):
         title = resource_group['resource_name']
+        remark = str(resource_group.get('remark') or '').strip()
+        if remark:
+            title = f"{title}「{remark}」"
         latest_episode = int(resource_group.get('latest_episode') or 0)
         if latest_episode > 0:
             title = f"{title} 更至{latest_episode}集"

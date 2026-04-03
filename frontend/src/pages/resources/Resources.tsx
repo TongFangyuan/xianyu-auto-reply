@@ -1273,7 +1273,7 @@ export function Resources() {
             <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">导出文案</h3>
-                <p className="text-sm text-slate-500 mt-1">导出纯文本资源文案，仅包含资源名称、更至集数和各网盘链接。</p>
+                <p className="text-sm text-slate-500 mt-1">导出纯文本资源文案，包含资源名称、备注、更至集数和各网盘链接。</p>
               </div>
               <button onClick={closeExportCopyModal} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
                 <X className="w-4 h-4" />
