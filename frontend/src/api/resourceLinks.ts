@@ -15,6 +15,7 @@ export interface ResourceLinkData {
   latest_episode?: number
   is_completed?: boolean
   remark?: string
+  is_invalid?: boolean
   association_count?: number
   created_at?: string
   updated_at?: string
@@ -59,6 +60,7 @@ export const getResourceLinks = async (params?: {
   keyword?: string
   drive_type?: string
   resource_type?: string
+  invalid_status?: boolean
 }): Promise<{ success: boolean; data?: ResourceLinkData[] }> => {
   const result = await get<ResourceLinkData[]>('/resource-links', { params })
   return { success: true, data: result }
@@ -75,6 +77,13 @@ export const updateResourceLink = (
   data: ResourceLinkPayload
 ): Promise<{ message: string }> => {
   return put(`/resource-links/${linkId}`, data)
+}
+
+export const updateResourceLinkInvalidStatus = (
+  linkId: string,
+  data: { is_invalid: boolean }
+): Promise<{ message: string; is_invalid: boolean }> => {
+  return put(`/resource-links/${linkId}/invalid-status`, data)
 }
 
 export const deleteResourceLink = (linkId: string): Promise<{ message: string }> => {

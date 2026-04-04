@@ -5885,6 +5885,7 @@ def get_resource_links(
     keyword: Optional[str] = None,
     drive_type: Optional[str] = None,
     resource_type: Optional[str] = None,
+    invalid_status: Optional[bool] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """获取当前用户的卡密资源列表"""
@@ -5895,7 +5896,8 @@ def get_resource_links(
             current_user['user_id'],
             keyword,
             normalized_drive_type,
-            normalized_resource_type
+            normalized_resource_type,
+            invalid_status,
         )
         return resource_links
     except ValueError as e:
@@ -6224,6 +6226,38 @@ def update_resource_link(link_id: int, link_data: dict, current_user: Dict[str, 
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         log_with_user('error', f"更新卡密资源失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/resource-links/{link_id}/invalid-status")
+def update_resource_link_invalid_status(
+    link_id: int,
+    status_data: dict,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """更新卡密链接失效状态"""
+    try:
+        is_invalid = status_data.get('is_invalid')
+        if not isinstance(is_invalid, bool):
+            raise HTTPException(status_code=400, detail="is_invalid 必须是布尔值")
+
+        success = db_manager.set_resource_link_invalid_status(
+            link_id=link_id,
+            user_id=current_user['user_id'],
+            is_invalid=is_invalid,
+        )
+        if success:
+            action_text = '标记失效' if is_invalid else '恢复正常'
+            log_with_user('info', f"{action_text}卡密资源成功: ID {link_id}", current_user)
+            return {
+                "message": f"卡密链接已{'标记为失效' if is_invalid else '恢复为正常'}",
+                "is_invalid": is_invalid,
+            }
+        raise HTTPException(status_code=404, detail="卡密资源不存在")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"更新卡密失效状态失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
 
 

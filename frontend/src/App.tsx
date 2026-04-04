@@ -13,6 +13,7 @@ import { About } from '@/pages/about/About'
 import { Disclaimer } from '@/pages/disclaimer/Disclaimer'
 import { Cards } from '@/pages/cards/Cards'
 import { Resources } from '@/pages/resources/Resources'
+import { ResourceExportConfigPage } from '@/pages/resources/ResourceExportConfigPage'
 import { ResourceLinks } from '@/pages/resource-links/ResourceLinks'
 import { Delivery } from '@/pages/delivery/Delivery'
 import { NotificationChannels } from '@/pages/notifications/NotificationChannels'
@@ -157,6 +158,7 @@ function App() {
           <Route path="keywords" element={<Keywords />} />
           <Route path="item-replies" element={<ItemReplies />} />
           <Route path="resources" element={<Resources />} />
+          <Route path="resources/export-config" element={<ResourceExportConfigPage />} />
           <Route path="resource-links" element={<ResourceLinks />} />
           <Route path="cards" element={<Cards />} />
           <Route path="delivery" element={<Delivery />} />

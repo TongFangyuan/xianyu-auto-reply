@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'framer-motion'
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   Copy,
@@ -27,6 +28,7 @@ import {
   importResourceLinks,
   importResourceLinksCsv,
   updateResourceLink,
+  updateResourceLinkInvalidStatus,
   type ResourceLinkData,
   type ResourceLinkImportDuplicate,
   type ResourceLinkImportError,
@@ -70,6 +72,12 @@ const exportUpdatedPresetOptions = [
   { value: '3d', label: '最近3天更新' },
   { value: '7d', label: '最近7天更新' },
   { value: 'custom', label: '自定义时间' },
+]
+
+const invalidStatusOptions = [
+  { value: '', label: '全部状态' },
+  { value: 'normal', label: '正常' },
+  { value: 'invalid', label: '已失效' },
 ]
 
 const initialFormData: ResourceLinkFormData = {
@@ -264,11 +272,13 @@ export function ResourceLinks() {
   const [queryKeyword, setQueryKeyword] = useState('')
   const [resourceTypeFilter, setResourceTypeFilter] = useState('')
   const [driveFilter, setDriveFilter] = useState('')
+  const [invalidStatusFilter, setInvalidStatusFilter] = useState('')
   const [activeModal, setActiveModal] = useState<ModalType>(null)
   const [editingLink, setEditingLink] = useState<ResourceLinkData | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formData, setFormData] = useState<ResourceLinkFormData>(initialFormData)
   const [submitting, setSubmitting] = useState(false)
+  const [statusUpdatingId, setStatusUpdatingId] = useState<number | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importResourceId, setImportResourceId] = useState('')
   const [importContent, setImportContent] = useState('')
@@ -353,7 +363,8 @@ export function ResourceLinks() {
   const loadResourceLinks = async (
     keyword = queryKeyword,
     driveType = driveFilter,
-    resourceType = resourceTypeFilter
+    resourceType = resourceTypeFilter,
+    invalidStatus = invalidStatusFilter
   ) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
@@ -362,6 +373,7 @@ export function ResourceLinks() {
         keyword: keyword || undefined,
         drive_type: driveType || undefined,
         resource_type: resourceType || undefined,
+        invalid_status: invalidStatus ? invalidStatus === 'invalid' : undefined,
       })
       if (result.success) {
         setResourceLinks(result.data || [])
@@ -381,7 +393,7 @@ export function ResourceLinks() {
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     loadResourceLinks()
-  }, [_hasHydrated, isAuthenticated, token, queryKeyword, driveFilter, resourceTypeFilter])
+  }, [_hasHydrated, isAuthenticated, token, queryKeyword, driveFilter, resourceTypeFilter, invalidStatusFilter])
 
   const handleSearchSubmit = (e: FormEvent) => {
     e.preventDefault()
@@ -540,6 +552,28 @@ export function ResourceLinks() {
       loadResourceLinks()
     } catch (error) {
       addToast({ type: 'error', message: getErrorMessage(error, '删除失败') })
+    }
+  }
+
+  const handleToggleInvalidStatus = async (link: ResourceLinkData) => {
+    if (!link.id) return
+
+    const nextInvalid = !link.is_invalid
+    const confirmText = nextInvalid
+      ? `确定要将卡密「${link.resource_name} / ${getDriveTypeLabel(link.drive_type)}」标记为失效吗？`
+      : `确定要将卡密「${link.resource_name} / ${getDriveTypeLabel(link.drive_type)}」恢复为正常吗？`
+
+    if (!confirm(confirmText)) return
+
+    try {
+      setStatusUpdatingId(link.id)
+      const result = await updateResourceLinkInvalidStatus(String(link.id), { is_invalid: nextInvalid })
+      addToast({ type: 'success', message: result.message || (nextInvalid ? '已标记失效' : '已恢复正常') })
+      loadResourceLinks()
+    } catch (error) {
+      addToast({ type: 'error', message: getErrorMessage(error, '更新失效状态失败') })
+    } finally {
+      setStatusUpdatingId(null)
     }
   }
 
@@ -819,7 +853,7 @@ export function ResourceLinks() {
                 />
               </div>
             </div>
-            <div className="lg:col-span-3">
+            <div className="lg:col-span-2">
               <label className="input-label mb-1">资源类型</label>
               <Select
                 value={resourceTypeFilter}
@@ -828,13 +862,22 @@ export function ResourceLinks() {
                 placeholder="全部资源类型"
               />
             </div>
-            <div className="lg:col-span-3">
+            <div className="lg:col-span-2">
               <label className="input-label mb-1">网盘类型</label>
               <Select
                 value={driveFilter}
                 onChange={setDriveFilter}
                 options={driveTypeOptions}
                 placeholder="全部网盘"
+              />
+            </div>
+            <div className="lg:col-span-2">
+              <label className="input-label mb-1">链接状态</label>
+              <Select
+                value={invalidStatusFilter}
+                onChange={setInvalidStatusFilter}
+                options={invalidStatusOptions}
+                placeholder="全部状态"
               />
             </div>
             <div className="lg:col-span-2 flex items-end gap-3">
@@ -849,6 +892,7 @@ export function ResourceLinks() {
                   setQueryKeyword('')
                   setResourceTypeFilter('')
                   setDriveFilter('')
+                  setInvalidStatusFilter('')
                 }}
                 className="btn-ios-secondary"
               >
@@ -865,6 +909,7 @@ export function ResourceLinks() {
                   <th>资源类型</th>
                   <th>网盘类型</th>
                   <th>资源链接</th>
+                  <th>状态</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -872,7 +917,7 @@ export function ResourceLinks() {
               <tbody>
                 {resourceLinks.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-10 text-slate-500">
+                    <td colSpan={7} className="text-center py-10 text-slate-500">
                       <div className="flex flex-col items-center gap-2">
                         <Link2 className="w-12 h-12 text-slate-300" />
                         <p>暂无卡密</p>
@@ -900,11 +945,22 @@ export function ResourceLinks() {
                           href={link.resource_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="truncate block text-blue-600 dark:text-blue-400 hover:underline"
+                          className={`truncate block hover:underline ${
+                            link.is_invalid
+                              ? 'text-slate-400 dark:text-slate-500'
+                              : 'text-blue-600 dark:text-blue-400'
+                          }`}
                           title={link.resource_url}
                         >
                           {link.resource_url}
                         </a>
+                      </td>
+                      <td>
+                        {link.is_invalid ? (
+                          <span className="badge-danger">已失效</span>
+                        ) : (
+                          <span className="badge-success">正常</span>
+                        )}
                       </td>
                       <td className="text-sm text-slate-500 whitespace-nowrap">
                         {formatServerDateTime(link.updated_at || link.created_at)}
@@ -927,6 +983,22 @@ export function ResourceLinks() {
                           >
                             <ExternalLink className="w-4 h-4 text-cyan-600" />
                           </a>
+                          <button
+                            onClick={() => handleToggleInvalidStatus(link)}
+                            disabled={statusUpdatingId === link.id}
+                            className={`p-2 rounded-lg transition-colors ${
+                              link.is_invalid ? 'hover:bg-emerald-50' : 'hover:bg-amber-50'
+                            } disabled:opacity-60`}
+                            title={link.is_invalid ? '恢复正常' : '标记失效'}
+                          >
+                            {statusUpdatingId === link.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                            ) : link.is_invalid ? (
+                              <Check className="w-4 h-4 text-emerald-500" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-amber-500" />
+                            )}
+                          </button>
                           <button
                             onClick={() => openEditModal(link)}
                             className="p-2 rounded-lg hover:bg-slate-100 transition-colors"

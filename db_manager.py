@@ -254,6 +254,7 @@ class DBManager:
                 latest_episode INTEGER NOT NULL DEFAULT 0,
                 is_completed BOOLEAN NOT NULL DEFAULT FALSE,
                 remark TEXT NOT NULL DEFAULT '',
+                is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
                 user_id INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -679,6 +680,7 @@ class DBManager:
                         latest_episode INTEGER NOT NULL DEFAULT 0,
                         is_completed BOOLEAN NOT NULL DEFAULT FALSE,
                         remark TEXT NOT NULL DEFAULT '',
+                        is_invalid BOOLEAN NOT NULL DEFAULT FALSE,
                         user_id INTEGER NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -698,17 +700,18 @@ class DBManager:
                     latest_episode_select = "COALESCE(latest_episode, 0)" if 'latest_episode' in resource_link_column_names else "0"
                     is_completed_select = "COALESCE(is_completed, 0)" if 'is_completed' in resource_link_column_names else "0"
                     remark_select = "COALESCE(remark, '')" if 'remark' in resource_link_column_names else "''"
+                    is_invalid_select = "COALESCE(is_invalid, 0)" if 'is_invalid' in resource_link_column_names else "0"
                     cursor.execute(f'''
                     INSERT INTO resource_links_new (
                         id, resource_id, resource_name, resource_type, drive_type, resource_url,
                         recommend_level, update_mode, update_weekdays, daily_episode_count,
-                        interval_days, latest_episode, is_completed, remark,
+                        interval_days, latest_episode, is_completed, remark, is_invalid,
                         user_id, created_at, updated_at
                     )
                     SELECT
                         id, {resource_id_select}, resource_name, {resource_type_select}, drive_type, resource_url,
                         {recommend_level_select}, {update_mode_select}, {update_weekdays_select}, {daily_episode_count_select},
-                        {interval_days_select}, {latest_episode_select}, {is_completed_select}, {remark_select},
+                        {interval_days_select}, {latest_episode_select}, {is_completed_select}, {remark_select}, {is_invalid_select},
                         user_id, created_at, updated_at
                     FROM resource_links
                     ''')
@@ -729,6 +732,7 @@ class DBManager:
                     ('latest_episode', "ALTER TABLE resource_links ADD COLUMN latest_episode INTEGER NOT NULL DEFAULT 0"),
                     ('is_completed', "ALTER TABLE resource_links ADD COLUMN is_completed BOOLEAN NOT NULL DEFAULT 0"),
                     ('remark', "ALTER TABLE resource_links ADD COLUMN remark TEXT NOT NULL DEFAULT ''"),
+                    ('is_invalid', "ALTER TABLE resource_links ADD COLUMN is_invalid BOOLEAN NOT NULL DEFAULT 0"),
                 ]
 
                 for column_name, alter_sql in additional_columns:
@@ -3638,6 +3642,7 @@ class DBManager:
                COALESCE(r.latest_episode, rl.latest_episode) AS latest_episode,
                COALESCE(r.is_completed, rl.is_completed) AS is_completed,
                COALESCE(r.remark, rl.remark) AS remark,
+               rl.is_invalid,
                rl.created_at, rl.updated_at,
                (
                    SELECT COUNT(*)
@@ -3733,7 +3738,7 @@ class DBManager:
 
     def _serialize_resource_link_row(self, row, cursor=None) -> Dict[str, Any]:
         local_cursor = cursor or self.conn.cursor()
-        association_count = row[16] if len(row) > 16 else self._get_resource_link_association_count(local_cursor, row[0])
+        association_count = row[17] if len(row) > 17 else self._get_resource_link_association_count(local_cursor, row[0])
         resource_id = row[1]
         return {
             'id': row[0],
@@ -3750,8 +3755,9 @@ class DBManager:
             'latest_episode': int(row[11] or 0),
             'is_completed': bool(row[12]),
             'remark': row[13] or '',
-            'created_at': row[14],
-            'updated_at': row[15],
+            'is_invalid': bool(row[14]),
+            'created_at': row[15],
+            'updated_at': row[16],
             'association_count': association_count or 0,
             'associated_items': self._get_resource_item_previews(local_cursor, resource_id, limit=1) if resource_id else [],
         }
@@ -4024,7 +4030,14 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def list_resource_links(self, user_id: int, keyword: str = None, drive_type: str = None, resource_type: str = None):
+    def list_resource_links(
+        self,
+        user_id: int,
+        keyword: str = None,
+        drive_type: str = None,
+        resource_type: str = None,
+        is_invalid: Optional[bool] = None
+    ):
         """获取卡密资源列表"""
         with self.lock:
             try:
@@ -4044,6 +4057,9 @@ class DBManager:
                 if drive_type:
                     sql += " AND LOWER(rl.drive_type) = LOWER(?)"
                     params.append(drive_type.strip())
+                if is_invalid is not None:
+                    sql += " AND COALESCE(rl.is_invalid, 0) = ?"
+                    params.append(1 if is_invalid else 0)
 
                 sql += " ORDER BY rl.updated_at DESC, rl.id DESC"
                 self._execute_sql(cursor, sql, tuple(params))
@@ -4154,9 +4170,9 @@ class DBManager:
                 INSERT INTO resource_links (
                     resource_id, resource_name, resource_type, drive_type, resource_url, recommend_level,
                     update_mode, update_weekdays, daily_episode_count, interval_days, latest_episode,
-                    is_completed, remark, user_id
+                    is_completed, remark, is_invalid, user_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     resource['id'],
                     resource['resource_name'],
@@ -4171,6 +4187,7 @@ class DBManager:
                     resource['latest_episode'],
                     1 if resource['is_completed'] else 0,
                     resource['remark'],
+                    0,
                     user_id,
                 ))
                 link_id = cursor.lastrowid
@@ -4249,6 +4266,28 @@ class DBManager:
                 return updated_current_row
             except Exception as e:
                 logger.error(f"更新卡密资源失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def set_resource_link_invalid_status(self, link_id: int, user_id: int, is_invalid: bool):
+        """更新卡密链接失效状态"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                UPDATE resource_links
+                SET is_invalid = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                ''', (
+                    1 if is_invalid else 0,
+                    link_id,
+                    user_id,
+                ))
+                updated = cursor.rowcount > 0
+                self.conn.commit()
+                return updated
+            except Exception as e:
+                logger.error(f"更新卡密失效状态失败: {e}")
                 self.conn.rollback()
                 raise
 
@@ -4519,9 +4558,9 @@ class DBManager:
                 INSERT INTO resource_links (
                     resource_id, resource_name, resource_type, drive_type, resource_url, recommend_level,
                     update_mode, update_weekdays, daily_episode_count, interval_days, latest_episode,
-                    is_completed, remark, user_id
+                    is_completed, remark, is_invalid, user_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     resource['id'],
                     resource['resource_name'],
@@ -4536,6 +4575,7 @@ class DBManager:
                     resource['latest_episode'],
                     1 if resource['is_completed'] else 0,
                     resource['remark'],
+                    0,
                     user_id,
                 ))
                 self.conn.commit()
